@@ -69,6 +69,7 @@ cbuffer CB
 {
     uint gFrameCount;    // Frame count since scene was loaded.
     uint gPRNGDimension; // First available PRNG dimension.
+    uint gIteration;     // ReSTIR iteration
 }
 
 // Inputs
@@ -82,31 +83,66 @@ RWTexture2D<float4> gOutputColor;
 // Internals
 struct ReSTIRSample
 {
-    int type;
+    int type;   // 0 = null, 1 = light, 2 = dir
     uint light; // analytical
     float3 dir; // environment
                 // todo: emissive
 
-    __init(int type_ = 1, uint light_ = 0, float3 dir_ = float3(0, 1, 0))
+    __init(int type_ = 0, uint light_ = 0, float3 dir_ = float3(0, 0, 0))
     {
         type = type_;
         light = light_;
         dir = dir_;
     }
 }
+const static int maxConfidence = 20;
 struct Reservoir
 {
-    ReSTIRSample X;
-    int c;
+    ReSTIRSample Y;
     float W;
-    float Y;
+    int c;
+    float phat;
 
-    __init(ReSTIRSample X_ = ReSTIRSample(), int c_ = 0, float W_ = 0.f, float Y_ = 0.f)
+    struct Builder
     {
-        X = X_;
-        c = c_;
-        W = W_;
+        ReSTIRSample Y;
+        float Wsum;
+        int c;
+        float phat;
+
+        __init()
+        {
+            Y = ReSTIRSample();
+            Wsum = 0.f;
+            c = 0;
+            phat = 0.f;
+        }
+
+        [mutating]
+        void update(Reservoir r, float m, float phat_, inout SampleGenerator sg)
+        {
+            float wi = m * phat_ * r.W;
+            Wsum += wi;
+            c += r.c;
+            if (sampleNext1D(sg) * Wsum < wi)
+            {
+                Y = r.Y;
+                phat = phat_;
+            }
+        }
+
+        Reservoir build()
+        {
+            return Reservoir(Y, phat == 0 ? 0 : Wsum / phat, min(c, maxConfidence), phat);
+        }
+    }
+
+    __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float phat_ = 0.f)
+    {
         Y = Y_;
+        W = W_;
+        c = c_;
+        phat = phat_;
     }
 }
 RWStructuredBuffer<Reservoir> gReSTIR;
@@ -412,6 +448,62 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     rayData.pathLength++;
 }
 
+bool isInBounds(const uint2 pixel, const uint2 frameDim)
+{
+    return all(pixel >= 0) && all(pixel < frameDim);
+}
+
+uint toIndex(const uint2 pixel, const uint2 frameDim)
+{
+    return pixel.x + pixel.y * frameDim.x;
+}
+
+struct ReSTIRPoint
+{
+    ShadingData sd;
+    IMaterialInstance mi;
+    Reservoir r;
+
+    [mutating]
+    bool initialize(uint2 pixel, uint2 frameDim)
+    {
+        if (!isInBounds(pixel, frameDim))
+            return false;
+
+        const HitInfo hit = HitInfo(gVBuffer[pixel]);
+        if (!hit.isValid())
+            return false;
+
+        let lod = ExplicitLodTextureSampler(0.f);
+        const float3 primaryRayOrigin = gScene.camera.getPosition();
+        const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
+
+        // Load shading data.
+        sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir, lod);
+
+        // Create material instance at shading point.
+        mi = gScene.materials.getMaterialInstance(sd, lod);
+
+        return true;
+    }
+}
+
+/// A failed reprojection returns a Reservoir with the confidence c set to 0.
+Reservoir reprojectReservoir(uint2 pixel, uint2 frameDim)
+{
+    // Assume that this is only called from a valid pixel
+    //if (!isInBounds(pixel, frameDim))
+    //    return Reservoir();
+
+    // From SVGF reprojection
+    // +0.5 to account for texel center offset
+    pixel = int2(float2(pixel) + gMVec[pixel].xy * frameDim + float2(0.5, 0.5));
+    if (!isInBounds(pixel, frameDim))
+        return Reservoir();
+
+    return gPrevReSTIR[toIndex(pixel, frameDim)];
+}
+
 void sampleAnalyticalLight(inout SampleGenerator sg, out uint lightIndex, out float invPdf)
 {
     // Assumes that lightCount > 0
@@ -437,13 +529,13 @@ void sampleAllLights(inout SampleGenerator sg, out ReSTIRSample sample, out floa
 
     if (sampleNext1D(sg) < prob)
     {
-        sample.type = 0;
+        sample.type = 1;
         sampleAnalyticalLight(sg, sample.light, invPdf);
         invPdf /= prob;
     }
     else
     {
-        sample.type = 1;
+        sample.type = 2;
         sampleEnvMap(sg, sample.dir, invPdf);
         invPdf /= (1 - prob);
     }
@@ -451,11 +543,10 @@ void sampleAllLights(inout SampleGenerator sg, out ReSTIRSample sample, out floa
 
 float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
 {
-    // Sample local light source.
     float3 dir;
     float3 Li;
     float distance;
-    if (X.type == 0)
+    if (X.type == 1)
     {
         AnalyticLightSample ls;
         if (!sampleLight(sd.posW, gScene.getLight(X.light), sg, ls))
@@ -464,7 +555,7 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
         Li = ls.Li;
         distance = ls.distance;
     }
-    else if (X.type == 1)
+    else if (X.type == 2)
     {
         dir = X.dir;
         Li = kUseEnvBackground ? gScene.envMap.eval(dir) : kDefaultBackgroundColor;
@@ -497,11 +588,6 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
     return mi.eval(sd, dir, sg) * Li;
 }
 
-bool isInBounds(const uint2 pixel, const uint2 frameDim)
-{
-    return all(pixel >= 0) && all(pixel < frameDim);
-}
-
 /**
  * This is the main entry point for the minimal path tracer.
  *
@@ -520,23 +606,9 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
 {
     float3 outColor = float3(0.f);
 
-    const float3 primaryRayOrigin = gScene.camera.getPosition();
-    const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
-
-    const HitInfo hit = HitInfo(gVBuffer[pixel]);
-    if (hit.isValid())
+    ReSTIRPoint point;
+    if (point.initialize(pixel, frameDim))
     {
-        // Pixel represents a valid primary hit. Compute its contribution.
-
-        const bool isCurveHit = hit.getType() == HitType::Curve;
-        let lod = ExplicitLodTextureSampler(0.f);
-
-        // Load shading data.
-        ShadingData sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir, lod);
-
-        // Create material instance at shading point.
-        let mi = gScene.materials.getMaterialInstance(sd, lod);
-
         // Create sample generator.
         SampleGenerator sg = SampleGenerator(pixel, gFrameCount);
 
@@ -545,90 +617,56 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
         for (uint i = 0; i < gPRNGDimension; i++)
             sampleNext1D(sg);
 
-        // Compute ray origin for new rays spawned from the G-buffer.
-        float3 rayOrigin;
-        if (isCurveHit)
-        {
-            // For curves, we set the new origin at the sphere center.
-            rayOrigin = sd.posW - sd.curveRadius * sd.frame.N;
-        }
-        else
-        {
-            rayOrigin = sd.computeRayOrigin();
-        }
+        // ReSTIR
+        const int numCandidates = 5;
+        const bool candidatesVisibility = false;
 
-        { // ReSTIR
-            const int numCandidates = 5;
-            const bool candidatesVisibility = false;
-
+        if (gIteration == 0) // Temporal
+        {
             // Generate the canonical ReSTIR samples
-            ReSTIRSample Xc;
-            float wsum_c = 0;
-            float phat_c_fast = 0;
-            // Always start with one so changing number of candidates doesn't change the temporal reuse.
-            int c_c = 1;
+            var builder = Reservoir::Builder();
             for (int i = 0; i < numCandidates; ++i)
             {
                 ReSTIRSample X;
                 float invPdf;
                 sampleAllLights(sg, X, invPdf);
-                float phat = luminance(evalF(sd, mi, sg, X, candidatesVisibility));
-                float w_i = 1.0 / numCandidates * phat * invPdf;
-
-                wsum_c += w_i;
-                if (wsum_c > 0 && sampleNext1D(sg) < w_i / wsum_c)
-                {
-                    Xc = X;
-                    phat_c_fast = phat;
-                }
+                float phat = luminance(evalF(point.sd, point.mi, sg, X, candidatesVisibility));
+                builder.update(Reservoir(X, invPdf, 1, phat), 1.0f / numCandidates, phat, sg);
             }
-            float Wc = phat_c_fast == 0 ? 0 : wsum_c / phat_c_fast;
-            float phat_c = candidatesVisibility ? phat_c_fast : luminance(evalF(sd, mi, sg, Xc, true));
+            point.r = builder.build();
+            // Normalize confidence scale so that 1 is one frame of candidates
+            point.r.c = 1;
 
-            // From SVGF reprojection
-            // +0.5 to account for texel center offset
-            const int2 iposPrev = int2(float2(pixel) + gMVec[pixel].xy * frameDim + float2(0.5, 0.5));
+            // Temporal
+            float phatCandidate = candidatesVisibility ? point.r.phat : luminance(evalF(point.sd, point.mi, sg, point.r.Y, true));
+            var old = reprojectReservoir(pixel, frameDim);
 
-            ReSTIRSample Y = Xc;
-            float W = Wc;
-            float phat = phat_c;
-            float wsum = -1;
-            int c = c_c;
-            if (isInBounds(iposPrev, frameDim))
+            // Reset builder
+            builder = Reservoir::Builder();
+            float phatOld = luminance(evalF(point.sd, point.mi, sg, old.Y, true));
+            // Skip the temporal reuse if the old sample isn't visible (or never was).
+            // This is biased, but produces good results for some reason?
+            if (phatOld == 0)
             {
-                Reservoir old = gPrevReSTIR[iposPrev.x + iposPrev.y * frameDim.x];
-                if (old.c > 0)
-                {
-                    float phat_old = luminance(evalF(sd, mi, sg, old.X, true));
-                    // Skip the temporal reuse if the old sample isn't visible (or never was).
-                    // This is biased, but produces good results for some reason?
-                    if (phat_old != 0)
-                    {
-                        // The first sample is always picked in the reservoir,
-                        // so start of by picking the canonical sample.
-                        // The m weight is very biased.
-                        wsum = float(c) / (c + old.c) * phat_c * Wc;
+                old = Reservoir();
+            }
+            builder.update(point.r, (float)point.r.c / (point.r.c + old.c), phatCandidate, sg);
+            builder.update(old, (float)old.c / (point.r.c + old.c), phatOld, sg);
+            point.r = builder.build();
 
-                        // Temporal sample
-                        float m = float(old.c) / (c + old.c);
-                        float w_i = m * phat_old * old.W;
-                        wsum += w_i;
-                        c += old.c;
-                        if (wsum > 0 && sampleNext1D(sg) < w_i / wsum)
-                        {
-                            Y = old.X;
-                            phat = phat_old;
-                        }
-                        W = phat == 0 ? 0 : wsum / phat;
-                    }
-                }
-            }
-            if (c == c_c && phat == 0)
+            gReSTIR[toIndex(pixel, frameDim)] = point.r;
+            outColor = evalF(point.sd, point.mi, sg, point.r.Y, true) * point.r.W;
+        }
+        else // Spatial
+        {
+            const int maxSpatialSearch = 4;
+            for (int i = 0; i < maxSpatialSearch; ++i)
             {
-                W = 0;
+
             }
-            gReSTIR[pixel.x + pixel.y * frameDim.x] = Reservoir(Y, min(c, 20), W, phat);
-            outColor = evalF(sd, mi, sg, Y, true) * W;
+
+            //outColor = evalF(sd, mi, sg, Y, true) * W;
+            gReSTIR[toIndex(pixel, frameDim)] = gPrevReSTIR[toIndex(pixel, frameDim)];
         }
 
         /*
@@ -663,8 +701,9 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
     }
     else
     {
-        gReSTIR[pixel.x + pixel.y * frameDim.x] = Reservoir();
+        gReSTIR[toIndex(pixel, frameDim)] = Reservoir();
         // Background pixel.
+        const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
         outColor = kUseEnvBackground ? gScene.envMap.eval(primaryRayDir) : kDefaultBackgroundColor;
     }
 

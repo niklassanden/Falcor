@@ -68,17 +68,17 @@ const char kUseImportanceSampling[] = "useImportanceSampling";
 
 struct ReSTIRSample
 {
-    int type{1};
+    int type{0};
     uint light{0};       // analytical
-    float3 dir{0, 1, 0}; // environment
+    float3 dir{0, 0, 0}; // environment
                          // todo: emissive
 };
 struct Reservoir
 {
-    ReSTIRSample X{};
-    int c{0};
+    ReSTIRSample Y{};
     float W{0.0f};
-    float Y{0.0f};
+    int c{0};
+    float phat{0.0f};
 };
 } // namespace
 
@@ -217,16 +217,20 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     for (auto channel : kOutputChannels)
         bind(channel);
 
-    var[kReSTIR] = mReSTIRBuffers[0];
-    var[kPrevReSTIR] = mReSTIRBuffers[1];
-    std::swap(mReSTIRBuffers[0], mReSTIRBuffers[1]);
 
     // Get dimensions of ray dispatch.
     const uint2 targetDim = renderData.getDefaultTextureDims();
     FALCOR_ASSERT(targetDim.x > 0 && targetDim.y > 0);
 
     // Spawn the rays.
-    mScene->raytrace(pRenderContext, mTracer.program.get(), mTracer.vars, uint3(targetDim, 1));
+    for (int it = 0; it < 1; ++it)
+    {
+        var["CB"]["gIteration"] = it;
+        var[kReSTIR] = mReSTIRBuffers[0];
+        var[kPrevReSTIR] = mReSTIRBuffers[1];
+        std::swap(mReSTIRBuffers[0], mReSTIRBuffers[1]);
+        mScene->raytrace(pRenderContext, mTracer.program.get(), mTracer.vars, uint3(targetDim, 1));
+    }
 
     mFrameCount++;
 }
