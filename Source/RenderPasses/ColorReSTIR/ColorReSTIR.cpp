@@ -66,6 +66,13 @@ const char kMaxBounces[] = "maxBounces";
 const char kComputeDirect[] = "computeDirect";
 const char kUseImportanceSampling[] = "useImportanceSampling";
 
+const char kCandidateCount[] = "gCandidateCount";
+const char kCandidatesVisibility[] = "gCandidatesVisibility";
+const char kMaxConfidence[] = "gMaxConfidence";
+const char kSpatialReuse[] = "SPATIAL_REUSE";
+const char kMaxSpatialSearch[] = "gMaxSpatialSearch";
+const char kSpatialRadius[] = "gSpatialRadius";
+
 struct ReSTIRSample
 {
     int type{0};
@@ -100,9 +107,23 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mComputeDirect = value;
         else if (key == kUseImportanceSampling)
             mUseImportanceSampling = value;
+
+        else if (key == kCandidateCount)
+            mConfig.candidateCount = value;
+        else if (key == kCandidatesVisibility)
+            mConfig.candidatesVisibility = value;
+        else if (key == kMaxConfidence)
+            mConfig.maxConfidence = value;
+        else if (key == kSpatialReuse)
+            mConfig.spatialReuse = value;
+        else if (key == kMaxSpatialSearch)
+            mConfig.maxSpatialSearch = value;
+        else if (key == kSpatialRadius)
+            mConfig.spatialRadius = value;
         else
             logWarning("Unknown property '{}' in ColorReSTIR properties.", key);
     }
+    updateDefines();
 }
 
 Properties ColorReSTIR::getProperties() const
@@ -111,6 +132,14 @@ Properties ColorReSTIR::getProperties() const
     props[kMaxBounces] = mMaxBounces;
     props[kComputeDirect] = mComputeDirect;
     props[kUseImportanceSampling] = mUseImportanceSampling;
+
+    props[kCandidateCount] = mConfig.candidateCount;
+    props[kCandidatesVisibility] = mConfig.candidatesVisibility;
+    props[kMaxConfidence] = mConfig.maxConfidence;
+    props[kSpatialReuse] = mConfig.spatialReuse;
+    props[kMaxSpatialSearch] = mConfig.maxSpatialSearch;
+    props[kSpatialRadius] = mConfig.spatialRadius;
+
     return props;
 }
 
@@ -180,6 +209,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
 
     // Specialize program.
     // These defines should not modify the program vars. Do not trigger program vars re-creation.
+    mTracer.program->addDefine(kSpatialReuse, std::to_string(mDefines.spatialReuse));
     mTracer.program->addDefine("MAX_BOUNCES", std::to_string(mMaxBounces));
     mTracer.program->addDefine("COMPUTE_DIRECT", mComputeDirect ? "1" : "0");
     mTracer.program->addDefine("USE_IMPORTANCE_SAMPLING", mUseImportanceSampling ? "1" : "0");
@@ -203,6 +233,11 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     auto var = mTracer.vars->getRootVar();
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
+    var["CB"][kCandidateCount] = mConfig.candidateCount;
+    var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
+    var["CB"][kMaxConfidence] = mConfig.maxConfidence;
+    var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
+    var["CB"][kSpatialRadius] = mConfig.spatialRadius;
 
     // Bind I/O buffers. These needs to be done per-frame as the buffers may change anytime.
     auto bind = [&](const ChannelDesc& desc)
@@ -216,7 +251,6 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
         bind(channel);
     for (auto channel : kOutputChannels)
         bind(channel);
-
 
     // Get dimensions of ray dispatch.
     const uint2 targetDim = renderData.getDefaultTextureDims();
@@ -239,6 +273,21 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 {
     bool dirty = false;
 
+    if (definesOutdated())
+    {
+        auto pressed = widget.button("Update defines");
+        widget.tooltip(
+            "Updates defines and recompiles shaders (if this version is not already cached). This button is only visible if the defines "
+            "our out of date.",
+            true
+        );
+        if (pressed)
+        {
+            dirty = true;
+            updateDefines();
+        }
+    }
+
     dirty |= widget.var("Max bounces", mMaxBounces, 0u, 1u << 16);
     widget.tooltip("Maximum path length for indirect illumination.\n0 = direct only\n1 = one indirect bounce etc.", true);
 
@@ -247,6 +296,28 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.checkbox("Use importance sampling", mUseImportanceSampling);
     widget.tooltip("Use importance sampling for materials", true);
+
+    dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16);
+    widget.tooltip("Number of candidate light samples to generate before temporal reuse.", true);
+
+    dirty |= widget.checkbox("Candidate visibility", mConfig.candidatesVisibility);
+    widget.tooltip("If enabled, each candidate sample will shoot shadow rays to compute visibility.", true);
+
+    dirty |= widget.var("Max confidence", mConfig.maxConfidence, 1u, 1u << 16);
+    widget.tooltip("Clamps the confidence to this value. This controls the weight in the temporal accumulation.", true);
+
+    dirty |= widget.var("Spatial reuse", mConfig.spatialReuse, 0u, 1u << 16);
+    widget.tooltip(
+        "(Recompiles shaders). The number of neighbors to do spatial reuse from. Note that this is an upper bound, the actual number "
+        "depends on how many are found.",
+        true
+    );
+
+    dirty |= widget.var("Max spatial search", mConfig.maxSpatialSearch, 0u, 1u << 16);
+    widget.tooltip("The number of pixels we are allowed to look at when finding neighbors for spatial reuse.", true);
+
+    dirty |= widget.var("Spatial radius", mConfig.spatialRadius, 0u, 1u << 16);
+    widget.tooltip("The radius for spatial reuse measured in pixels.", true);
 
     // If rendering options that modify the output have changed, set flag to indicate that.
     // In execute() we will pass the flag to other passes for reset of temporal data etc.
@@ -353,6 +424,15 @@ void ColorReSTIR::prepareVars()
     // Bind utility classes into shared data.
     auto var = mTracer.vars->getRootVar();
     mSampleGenerator->bindShaderData(var);
+}
+
+bool ColorReSTIR::definesOutdated()
+{
+    return mDefines.spatialReuse != mConfig.spatialReuse;
+}
+void ColorReSTIR::updateDefines()
+{
+    mDefines.spatialReuse = mConfig.spatialReuse;
 }
 
 void ColorReSTIR::onHotReload(HotReloadFlags reloaded)

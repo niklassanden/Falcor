@@ -44,6 +44,8 @@
  *
  * The host sets the following defines:
  *
+ * MAX_SPATIAL_REUSE       Maximum number of spatial reuses.
+ *
  * MAX_BOUNCES             Maximum number of indirect bounces (0 means no indirect).
  * COMPUTE_DIRECT          Nonzero if direct illumination should be included.
  * USE_IMPORTANCE_SAMPLING Nonzero if importance sampling should be used for sampling materials.
@@ -69,7 +71,13 @@ cbuffer CB
 {
     uint gFrameCount;    // Frame count since scene was loaded.
     uint gPRNGDimension; // First available PRNG dimension.
-    uint gIteration;     // ReSTIR iteration
+
+    uint gIteration; // ReSTIR iteration
+    uint gCandidateCount;
+    bool gCandidatesVisibility;
+    uint gMaxConfidence;
+    uint gMaxSpatialSearch;
+    uint gSpatialRadius;
 }
 
 // Inputs
@@ -95,7 +103,6 @@ struct ReSTIRSample
         dir = dir_;
     }
 }
-const static int maxConfidence = 20;
 struct Reservoir
 {
     ReSTIRSample Y;
@@ -131,7 +138,7 @@ struct Reservoir
             }
         }
 
-        Reservoir build() { return Reservoir(Y, phat == 0 ? 0 : Wsum / phat, min(c, maxConfidence), phat); }
+        Reservoir build() { return Reservoir(Y, phat == 0 ? 0 : Wsum / phat, min(c, gMaxConfidence), phat); }
     }
 
     __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float phat_ = 0.f)
@@ -147,6 +154,7 @@ StructuredBuffer<Reservoir> gPrevReSTIR;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
+static const uint kSpatialReuse = SPATIAL_REUSE;
 static const uint kMaxBounces = MAX_BOUNCES;
 static const bool kComputeDirect = COMPUTE_DIRECT;
 static const bool kUseImportanceSampling = USE_IMPORTANCE_SAMPLING;
@@ -617,20 +625,17 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             sampleNext1D(sg);
 
         // ReSTIR
-        const int numCandidates = 5;
-        const bool candidatesVisibility = false;
-
         if (gIteration == 0) // Temporal
         {
             // Generate the canonical ReSTIR samples
             var builder = Reservoir::Builder();
-            for (int i = 0; i < numCandidates; ++i)
+            for (int i = 0; i < gCandidateCount; ++i)
             {
                 ReSTIRSample X;
                 float invPdf;
                 sampleAllLights(sg, X, invPdf);
-                float phat = luminance(evalF(point.sd, point.mi, sg, X, candidatesVisibility));
-                builder.update(Reservoir(X, invPdf, 1, phat), 1.0f / numCandidates, phat, sg);
+                float phat = luminance(evalF(point.sd, point.mi, sg, X, gCandidatesVisibility));
+                builder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gCandidateCount, phat, sg);
             }
             point.r = builder.build();
             // Normalize confidence scale so that 1 is one frame of candidates
@@ -639,7 +644,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             // Temporal
             uint2 oldPixel = reproject(pixel, frameDim);
             var old = isInBounds(oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
-            float phatCandidate = candidatesVisibility ? point.r.phat : luminance(evalF(point.sd, point.mi, sg, point.r.Y, true));
+            float phatCandidate = gCandidatesVisibility ? point.r.phat : luminance(evalF(point.sd, point.mi, sg, point.r.Y, true));
             float phatOld = luminance(evalF(point.sd, point.mi, sg, old.Y, true));
 
             // Reset builder
@@ -653,17 +658,13 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
         }
         else // Spatial
         {
-            const int maxSpatialSearch = 10;
-            const int spatialReuse = 1;
-            const int radius = 10;
-
-            ReSTIRPoint points[5];
+            ReSTIRPoint points[kSpatialReuse + 1];
             points[0] = point;
             points[0].r = gPrevReSTIR[toIndex(pixel, frameDim)];
             int pointsCount = 1;
-            for (int i = 0; i < maxSpatialSearch && pointsCount <= spatialReuse; ++i)
+            for (int i = 0; i < gMaxSpatialSearch && pointsCount <= kSpatialReuse; ++i)
             {
-                float2 offset = radius * (sampleNext2D(sg) * 2 - 1);
+                float2 offset = gSpatialRadius * (sampleNext2D(sg) * 2 - 1);
                 uint2 neighbour = pixel + int2(offset + sign(offset));
                 if (isInBounds(neighbour, frameDim) && points[pointsCount].initialize(neighbour, frameDim))
                 {

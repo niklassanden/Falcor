@@ -61,6 +61,8 @@ public:
 private:
     void parseProperties(const Properties& props);
     void prepareVars();
+    bool definesOutdated();
+    void updateDefines();
 
     // Internal state
 
@@ -73,6 +75,20 @@ private:
     ref<Buffer> mReSTIRBuffers[2];
 
     // Configuration
+
+    struct
+    {
+        uint candidateCount = 5;
+        bool candidatesVisibility = true;
+        uint maxConfidence = 20;
+        uint spatialReuse = 1;
+        uint maxSpatialSearch = 10;
+        uint spatialRadius = 20;
+    } mConfig;
+    struct
+    {
+        uint spatialReuse = 1;
+    } mDefines;
 
     /// Max number of indirect bounces (0 = none).
     uint mMaxBounces = 3;
