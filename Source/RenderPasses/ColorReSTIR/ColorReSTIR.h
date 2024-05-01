@@ -79,8 +79,9 @@ private:
     struct
     {
         uint candidateCount = 5;
-        bool candidatesVisibility = true;
+        bool candidatesVisibility = false;
         uint maxConfidence = 20;
+        bool temporalReuse = true;
         uint spatialReuse = 1;
         uint maxSpatialSearch = 10;
         uint spatialRadius = 20;

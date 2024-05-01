@@ -69,6 +69,7 @@ const char kUseImportanceSampling[] = "useImportanceSampling";
 const char kCandidateCount[] = "gCandidateCount";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
 const char kMaxConfidence[] = "gMaxConfidence";
+const char kTemporalReuse[] = "gTemporalReuse";
 const char kSpatialReuse[] = "SPATIAL_REUSE";
 const char kMaxSpatialSearch[] = "gMaxSpatialSearch";
 const char kSpatialRadius[] = "gSpatialRadius";
@@ -114,6 +115,8 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mConfig.candidatesVisibility = value;
         else if (key == kMaxConfidence)
             mConfig.maxConfidence = value;
+        else if (key == kTemporalReuse)
+            mConfig.temporalReuse = value;
         else if (key == kSpatialReuse)
             mConfig.spatialReuse = value;
         else if (key == kMaxSpatialSearch)
@@ -136,6 +139,7 @@ Properties ColorReSTIR::getProperties() const
     props[kCandidateCount] = mConfig.candidateCount;
     props[kCandidatesVisibility] = mConfig.candidatesVisibility;
     props[kMaxConfidence] = mConfig.maxConfidence;
+    props[kTemporalReuse] = mConfig.temporalReuse;
     props[kSpatialReuse] = mConfig.spatialReuse;
     props[kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     props[kSpatialRadius] = mConfig.spatialRadius;
@@ -236,6 +240,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"][kCandidateCount] = mConfig.candidateCount;
     var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
     var["CB"][kMaxConfidence] = mConfig.maxConfidence;
+    var["CB"][kTemporalReuse] = mConfig.temporalReuse;
     var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     var["CB"][kSpatialRadius] = mConfig.spatialRadius;
 
@@ -305,6 +310,9 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.var("Max confidence", mConfig.maxConfidence, 1u, 1u << 16);
     widget.tooltip("Clamps the confidence to this value. This controls the weight in the temporal accumulation.", true);
+
+    dirty |= widget.checkbox("Temporal reuse", mConfig.temporalReuse);
+    widget.tooltip("Whether or not to do temporal reuse.", true);
 
     dirty |= widget.var("Spatial reuse", mConfig.spatialReuse, 0u, 1u << 16);
     widget.tooltip(

@@ -76,6 +76,7 @@ cbuffer CB
     uint gCandidateCount;
     bool gCandidatesVisibility;
     uint gMaxConfidence;
+    bool gTemporalReuse;
     uint gMaxSpatialSearch;
     uint gSpatialRadius;
 }
@@ -643,7 +644,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
 
             // Temporal
             uint2 oldPixel = reproject(pixel, frameDim);
-            var old = isInBounds(oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
+            var old = gTemporalReuse && isInBounds(oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
             float phatCandidate = gCandidatesVisibility ? point.r.phat : luminance(evalF(point.sd, point.mi, sg, point.r.Y, true));
             float phatOld = luminance(evalF(point.sd, point.mi, sg, old.Y, true));
 
