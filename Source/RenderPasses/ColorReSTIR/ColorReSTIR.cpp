@@ -223,7 +223,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     FALCOR_ASSERT(targetDim.x > 0 && targetDim.y > 0);
 
     // Spawn the rays.
-    for (int it = 0; it < 1; ++it)
+    for (int it = 0; it < 2; ++it)
     {
         var["CB"]["gIteration"] = it;
         var[kReSTIR] = mReSTIRBuffers[0];

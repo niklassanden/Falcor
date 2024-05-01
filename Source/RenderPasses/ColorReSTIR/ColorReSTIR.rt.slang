@@ -131,10 +131,7 @@ struct Reservoir
             }
         }
 
-        Reservoir build()
-        {
-            return Reservoir(Y, phat == 0 ? 0 : Wsum / phat, min(c, maxConfidence), phat);
-        }
+        Reservoir build() { return Reservoir(Y, phat == 0 ? 0 : Wsum / phat, min(c, maxConfidence), phat); }
     }
 
     __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float phat_ = 0.f)
@@ -488,20 +485,22 @@ struct ReSTIRPoint
     }
 }
 
-/// A failed reprojection returns a Reservoir with the confidence c set to 0.
-Reservoir reprojectReservoir(uint2 pixel, uint2 frameDim)
+int2 reproject(uint2 pixel, uint2 frameDim)
 {
-    // Assume that this is only called from a valid pixel
-    //if (!isInBounds(pixel, frameDim))
-    //    return Reservoir();
-
     // From SVGF reprojection
     // +0.5 to account for texel center offset
-    pixel = int2(float2(pixel) + gMVec[pixel].xy * frameDim + float2(0.5, 0.5));
-    if (!isInBounds(pixel, frameDim))
-        return Reservoir();
+    return int2(float2(pixel) + gMVec[pixel].xy * frameDim + float2(0.5, 0.5));
+}
 
-    return gPrevReSTIR[toIndex(pixel, frameDim)];
+bool allowSpatialReuse(ReSTIRPoint a, ReSTIRPoint b)
+{
+    float depthA = dot(a.sd.posW - gScene.camera.getPosition(), normalize(gScene.camera.data.cameraW));
+    float depthB = dot(b.sd.posW - gScene.camera.getPosition(), normalize(gScene.camera.data.cameraW));
+
+    float3 normalA = a.sd.frame.N;
+    float3 normalB = b.sd.frame.N;
+
+    return abs(depthA - depthB) < 0.5f && dot(normalA, normalB) > 0.8;
 }
 
 void sampleAnalyticalLight(inout SampleGenerator sg, out uint lightIndex, out float invPdf)
@@ -610,7 +609,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
     if (point.initialize(pixel, frameDim))
     {
         // Create sample generator.
-        SampleGenerator sg = SampleGenerator(pixel, gFrameCount);
+        SampleGenerator sg = SampleGenerator(pixel, (gFrameCount + 100) * (gIteration + 1));
 
         // Advance the generator to the first available dimension.
         // TODO: This is potentially expensive. We may want to store/restore the state from memory if it becomes a problem.
@@ -638,35 +637,68 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             point.r.c = 1;
 
             // Temporal
+            uint2 oldPixel = reproject(pixel, frameDim);
+            var old = isInBounds(oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
             float phatCandidate = candidatesVisibility ? point.r.phat : luminance(evalF(point.sd, point.mi, sg, point.r.Y, true));
-            var old = reprojectReservoir(pixel, frameDim);
+            float phatOld = luminance(evalF(point.sd, point.mi, sg, old.Y, true));
 
             // Reset builder
             builder = Reservoir::Builder();
-            float phatOld = luminance(evalF(point.sd, point.mi, sg, old.Y, true));
-            // Skip the temporal reuse if the old sample isn't visible (or never was).
-            // This is biased, but produces good results for some reason?
-            if (phatOld == 0)
-            {
-                old = Reservoir();
-            }
             builder.update(point.r, (float)point.r.c / (point.r.c + old.c), phatCandidate, sg);
             builder.update(old, (float)old.c / (point.r.c + old.c), phatOld, sg);
             point.r = builder.build();
 
             gReSTIR[toIndex(pixel, frameDim)] = point.r;
-            outColor = evalF(point.sd, point.mi, sg, point.r.Y, true) * point.r.W;
+            // outColor = evalF(point.sd, point.mi, sg, point.r.Y, true) * point.r.W;
         }
         else // Spatial
         {
-            const int maxSpatialSearch = 4;
-            for (int i = 0; i < maxSpatialSearch; ++i)
-            {
+            const int maxSpatialSearch = 10;
+            const int spatialReuse = 1;
+            const int radius = 10;
 
+            ReSTIRPoint points[5];
+            points[0] = point;
+            points[0].r = gPrevReSTIR[toIndex(pixel, frameDim)];
+            int pointsCount = 1;
+            for (int i = 0; i < maxSpatialSearch && pointsCount <= spatialReuse; ++i)
+            {
+                float2 offset = radius * (sampleNext2D(sg) * 2 - 1);
+                uint2 neighbour = pixel + int2(offset + sign(offset));
+                if (isInBounds(neighbour, frameDim) && points[pointsCount].initialize(neighbour, frameDim))
+                {
+                    if (allowSpatialReuse(points[0], points[pointsCount]))
+                    {
+                        points[pointsCount].r = gPrevReSTIR[toIndex(neighbour, frameDim)];
+                        ++pointsCount;
+                    }
+                }
             }
 
-            //outColor = evalF(sd, mi, sg, Y, true) * W;
-            gReSTIR[toIndex(pixel, frameDim)] = gPrevReSTIR[toIndex(pixel, frameDim)];
+            if (pointsCount > 1)
+            {
+                var builder = Reservoir::Builder();
+                for (int i = 0; i < pointsCount; ++i)
+                {
+                    float phat = luminance(evalF(points[0].sd, points[0].mi, sg, points[i].r.Y, true));
+                    float mNumerator = 0.f;
+                    float mDenominator = 0.f;
+                    for (int j = 0; j < pointsCount; ++j)
+                    {
+                        var value = points[j].r.c * luminance(evalF(points[j].sd, points[j].mi, sg, points[i].r.Y, true));
+                        mDenominator += value;
+                        if (i == j)
+                            mNumerator += value;
+                    }
+                    float m = mDenominator == 0 ? 0 : mNumerator / mDenominator;
+
+                    builder.update(points[i].r, m, phat, sg);
+                }
+                points[0].r = builder.build();
+            }
+
+            gReSTIR[toIndex(pixel, frameDim)] = points[0].r;
+            outColor = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W;
         }
 
         /*
