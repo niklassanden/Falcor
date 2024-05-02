@@ -530,28 +530,29 @@ int2 reproject(uint2 pixel, uint2 frameDim)
     return int2(float2(pixel) + gMVec[pixel].xy * frameDim + float2(0.5, 0.5));
 }
 
-bool allowSpatialReuse(uint2 pixel, uint2 neighbor)
+bool allowSpatialReuse(uint2 neighbor, float z, float3 normal, float zGrad, float nfWidth)
 {
-    if (abs(gLinearZ[neighbor].x - gLinearZ[pixel].x) / (gLinearZ[pixel].y + 1e-2f) > 10.f)
+    // From SVGF
+    if (abs(gLinearZ[neighbor].x - z) / (zGrad + 1e-2f) > 10.f)
         return false;
 
-    if (distance(gNormals[pixel], gNormals[neighbor]) / (gPNFWidth[pixel].y + 1e-2) > 16.0)
+    if (distance(normal, gNormals[neighbor].xyz) / (nfWidth + 1e-2) > 16.0)
         return false;
 
     return true;
 }
 
-bool allowTemporalReuse(uint2 pixel, uint2 prevPixel, uint2 imageDim)
+bool allowTemporalReuse(uint2 prevPixel, uint2 imageDim, float z, float3 normal, float zGrad, float nfWidth)
 {
     // From SVGF
     if (!isInBounds(prevPixel, imageDim))
         return false;
 
     float movedZ = dot(gScene.camera.data.prevPosW - gScene.camera.data.posW, normalize(gScene.camera.data.cameraW));
-    if (abs((gPrevLinearZ[prevPixel].x + movedZ) - gLinearZ[pixel].x) / (gLinearZ[pixel].y + 1e-2f) > 10.f)
+    if (abs((gPrevLinearZ[prevPixel].x + movedZ) - z) / (zGrad + 1e-2f) > 10.f)
         return false;
 
-    if (distance(gNormals[pixel], gPrevNormals[prevPixel]) / (gPNFWidth[pixel].y + 1e-2) > 16.0)
+    if (distance(normal, gPrevNormals[prevPixel].rgb) / (nfWidth + 1e-2) > 16.0)
         return false;
 
     return true;
@@ -670,6 +671,12 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
         for (uint i = 0; i < gPRNGDimension; i++)
             sampleNext1D(sg);
 
+        // For geometry tests
+        float z = gLinearZ[pixel].x;
+        float zGrad = gLinearZ[pixel].y;
+        float3 normal = gNormals[pixel].xyz;
+        float nfWidth = gPNFWidth[pixel].y;
+
         // ReSTIR
         if (gIteration == 0) // Temporal
         {
@@ -689,8 +696,9 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
 
             // Temporal
             uint2 oldPixel = reproject(pixel, frameDim);
-            var old =
-                gTemporalReuse && allowTemporalReuse(pixel, oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
+            var old = gTemporalReuse && allowTemporalReuse(oldPixel, frameDim, z, normal, zGrad, nfWidth)
+                          ? gPrevReSTIR[toIndex(oldPixel, frameDim)]
+                          : Reservoir();
             float3 phatCandidate = gCandidatesVisibility ? point.r.phat : evalF(point.sd, point.mi, sg, point.r.Y, true);
             float3 phatOld = evalF(point.sd, point.mi, sg, old.Y, true);
 
@@ -715,7 +723,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
                 uint2 neighbor = pixel + int2(offset + sign(offset));
                 if (isInBounds(neighbor, frameDim) && points[pointsCount].initialize(neighbor, frameDim))
                 {
-                    if (allowSpatialReuse(pixel, neighbor))
+                    if (allowSpatialReuse(neighbor, z, normal, zGrad, nfWidth))
                     {
                         points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)];
                         ++pointsCount;
