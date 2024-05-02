@@ -104,32 +104,51 @@ struct ReSTIRSample
         dir = dir_;
     }
 }
+enum ProjectionType
+{
+    Luminance,
+    Red,
+    Green,
+    Blue,
+}
+float project(ProjectionType proj, float3 phat) {
+    static const float3 projections[4] = {
+        float3(0.2126f, 0.7152f, 0.0722f), // luminance
+        float3(1.f, 0.f, 0.f),             // red
+        float3(0.f, 1.f, 0.f),             // green
+        float3(0.f, 0.f, 1.f),             // blue
+    };
+    return dot(projections[(int)proj], phat);
+}
 struct Reservoir
 {
     ReSTIRSample Y;
     float W;
     int c;
-    float phat;
+    float3 phat;
 
     struct Builder
     {
         ReSTIRSample Y;
         float Wsum;
         int c;
-        float phat;
+        float3 phat;
+        ProjectionType proj;
 
-        __init()
+        __init(ProjectionType proj_)
         {
             Y = ReSTIRSample();
             Wsum = 0.f;
             c = 0;
-            phat = 0.f;
+            phat = float3(0.f, 0.f, 0.f);
+            proj = proj_;
         }
 
         [mutating]
-        void update(Reservoir r, float m, float phat_, inout SampleGenerator sg)
+        void update(Reservoir r, float m, float3 phat_, inout SampleGenerator sg)
         {
-            float wi = m * phat_ * r.W;
+            float projection = project(proj, phat_);
+            float wi = m * projection * r.W;
             Wsum += wi;
             c += r.c;
             if (sampleNext1D(sg) * Wsum < wi)
@@ -139,10 +158,14 @@ struct Reservoir
             }
         }
 
-        Reservoir build() { return Reservoir(Y, phat == 0 ? 0 : Wsum / phat, min(c, gMaxConfidence), phat); }
+        Reservoir build()
+        {
+            float projection = project(proj, phat);
+            return Reservoir(Y, projection == 0 ? 0 : Wsum / projection, min(c, gMaxConfidence), phat);
+        }
     }
 
-    __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float phat_ = 0.f)
+    __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float3 phat_ = float3(0.f, 0.f, 0.f))
     {
         Y = Y_;
         W = W_;
@@ -629,13 +652,13 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
         if (gIteration == 0) // Temporal
         {
             // Generate the canonical ReSTIR samples
-            var builder = Reservoir::Builder();
+            var builder = Reservoir::Builder(ProjectionType::Luminance);
             for (int i = 0; i < gCandidateCount; ++i)
             {
                 ReSTIRSample X;
                 float invPdf;
                 sampleAllLights(sg, X, invPdf);
-                float phat = luminance(evalF(point.sd, point.mi, sg, X, gCandidatesVisibility));
+                float3 phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility);
                 builder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gCandidateCount, phat, sg);
             }
             point.r = builder.build();
@@ -645,11 +668,11 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             // Temporal
             uint2 oldPixel = reproject(pixel, frameDim);
             var old = gTemporalReuse && isInBounds(oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
-            float phatCandidate = gCandidatesVisibility ? point.r.phat : luminance(evalF(point.sd, point.mi, sg, point.r.Y, true));
-            float phatOld = luminance(evalF(point.sd, point.mi, sg, old.Y, true));
+            float3 phatCandidate = gCandidatesVisibility ? point.r.phat : evalF(point.sd, point.mi, sg, point.r.Y, true);
+            float3 phatOld = evalF(point.sd, point.mi, sg, old.Y, true);
 
             // Reset builder
-            builder = Reservoir::Builder();
+            builder = Reservoir::Builder(ProjectionType::Luminance);
             builder.update(point.r, (float)point.r.c / (point.r.c + old.c), phatCandidate, sg);
             builder.update(old, (float)old.c / (point.r.c + old.c), phatOld, sg);
             point.r = builder.build();
@@ -679,10 +702,10 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
 
             if (pointsCount > 1)
             {
-                var builder = Reservoir::Builder();
+                var builder = Reservoir::Builder(ProjectionType::Luminance);
                 for (int i = 0; i < pointsCount; ++i)
                 {
-                    float phat = luminance(evalF(points[0].sd, points[0].mi, sg, points[i].r.Y, true));
+                    float3 phat = evalF(points[0].sd, points[0].mi, sg, points[i].r.Y, true);
                     float mNumerator = 0.f;
                     float mDenominator = 0.f;
                     for (int j = 0; j < pointsCount; ++j)

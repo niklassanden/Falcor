@@ -86,7 +86,7 @@ struct Reservoir
     ReSTIRSample Y{};
     float W{0.0f};
     int c{0};
-    float phat{0.0f};
+    float3 phat{0, 0, 0};
 };
 } // namespace
 
