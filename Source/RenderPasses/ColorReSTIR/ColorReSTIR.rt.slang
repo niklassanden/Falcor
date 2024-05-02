@@ -689,12 +689,12 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             for (int i = 0; i < gMaxSpatialSearch && pointsCount <= kSpatialReuse; ++i)
             {
                 float2 offset = gSpatialRadius * (sampleNext2D(sg) * 2 - 1);
-                uint2 neighbour = pixel + int2(offset + sign(offset));
-                if (isInBounds(neighbour, frameDim) && points[pointsCount].initialize(neighbour, frameDim))
+                uint2 neighbor = pixel + int2(offset + sign(offset));
+                if (isInBounds(neighbor, frameDim) && points[pointsCount].initialize(neighbor, frameDim))
                 {
                     if (allowSpatialReuse(points[0], points[pointsCount]))
                     {
-                        points[pointsCount].r = gPrevReSTIR[toIndex(neighbour, frameDim)];
+                        points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)];
                         ++pointsCount;
                     }
                 }
