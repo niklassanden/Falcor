@@ -84,6 +84,11 @@ cbuffer CB
 // Inputs
 Texture2D<PackedHitInfo> gVBuffer;
 Texture2D<float2> gMVec;
+Texture2D<float4> gNormals;
+Texture2D<float4> gPrevNormals;
+Texture2D<float2> gPNFWidth; // Position and guide normal filter width
+Texture2D<float2> gLinearZ;
+Texture2D<float2> gPrevLinearZ;
 Texture2D<float4> gViewW; // Optional
 
 // Outputs
@@ -111,7 +116,8 @@ enum ProjectionType
     Green,
     Blue,
 }
-float project(ProjectionType proj, float3 phat) {
+float project(ProjectionType proj, float3 phat)
+{
     static const float3 projections[4] = {
         float3(0.2126f, 0.7152f, 0.0722f), // luminance
         float3(1.f, 0.f, 0.f),             // red
@@ -524,15 +530,31 @@ int2 reproject(uint2 pixel, uint2 frameDim)
     return int2(float2(pixel) + gMVec[pixel].xy * frameDim + float2(0.5, 0.5));
 }
 
-bool allowSpatialReuse(ReSTIRPoint a, ReSTIRPoint b)
+bool allowSpatialReuse(uint2 pixel, uint2 neighbor)
 {
-    float depthA = dot(a.sd.posW - gScene.camera.getPosition(), normalize(gScene.camera.data.cameraW));
-    float depthB = dot(b.sd.posW - gScene.camera.getPosition(), normalize(gScene.camera.data.cameraW));
+    if (abs(gLinearZ[neighbor].x - gLinearZ[pixel].x) / (gLinearZ[pixel].y + 1e-2f) > 10.f)
+        return false;
 
-    float3 normalA = a.sd.frame.N;
-    float3 normalB = b.sd.frame.N;
+    if (distance(gNormals[pixel], gNormals[neighbor]) / (gPNFWidth[pixel].y + 1e-2) > 16.0)
+        return false;
 
-    return abs(depthA - depthB) < 0.5f && dot(normalA, normalB) > 0.8;
+    return true;
+}
+
+bool allowTemporalReuse(uint2 pixel, uint2 prevPixel, uint2 imageDim)
+{
+    // From SVGF
+    if (!isInBounds(prevPixel, imageDim))
+        return false;
+
+    float movedZ = dot(gScene.camera.data.prevPosW - gScene.camera.data.posW, normalize(gScene.camera.data.cameraW));
+    if (abs((gPrevLinearZ[prevPixel].x + movedZ) - gLinearZ[pixel].x) / (gLinearZ[pixel].y + 1e-2f) > 10.f)
+        return false;
+
+    if (distance(gNormals[pixel], gPrevNormals[prevPixel]) / (gPNFWidth[pixel].y + 1e-2) > 16.0)
+        return false;
+
+    return true;
 }
 
 void sampleAnalyticalLight(inout SampleGenerator sg, out uint lightIndex, out float invPdf)
@@ -667,7 +689,8 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
 
             // Temporal
             uint2 oldPixel = reproject(pixel, frameDim);
-            var old = gTemporalReuse && isInBounds(oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
+            var old =
+                gTemporalReuse && allowTemporalReuse(pixel, oldPixel, frameDim) ? gPrevReSTIR[toIndex(oldPixel, frameDim)] : Reservoir();
             float3 phatCandidate = gCandidatesVisibility ? point.r.phat : evalF(point.sd, point.mi, sg, point.r.Y, true);
             float3 phatOld = evalF(point.sd, point.mi, sg, old.Y, true);
 
@@ -692,7 +715,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
                 uint2 neighbor = pixel + int2(offset + sign(offset));
                 if (isInBounds(neighbor, frameDim) && points[pointsCount].initialize(neighbor, frameDim))
                 {
-                    if (allowSpatialReuse(points[0], points[pointsCount]))
+                    if (allowSpatialReuse(pixel, neighbor))
                     {
                         points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)];
                         ++pointsCount;

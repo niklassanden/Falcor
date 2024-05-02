@@ -44,12 +44,25 @@ const uint32_t kMaxPayloadSizeBytes = 72u;
 const uint32_t kMaxRecursionDepth = 2u;
 
 const char kInputViewDir[] = "viewW";
-
+const char kLinearZ[] = "linearZ";
+const char kNormals[] = "guideNormalW";
 const ChannelList kInputChannels = {
     // clang-format off
     { "vbuffer",        "gVBuffer",     "Visibility buffer in packed format" },
     { "mvec",           "gMVec",        "Motion vectors" },
+    { kNormals,         "gNormals",     "Guide normals in world space" },
+    { "pnFwidth",       "gPNFWidth",    "Position and guide normal filter width" },
+    { kLinearZ,         "gLinearZ",     "Linear depth and its derivative" },
     { kInputViewDir,    "gViewW",       "World-space view direction (xyz float format)", true /* optional */ },
+    // clang-format on
+};
+
+const char kPrevNormals[] = "prevGuideNormalW";
+const char kPrevLinearZ[] = "prevLinearZ";
+const ChannelList kInternalChannels = {
+    // clang-format off
+    { kPrevNormals,     "gPrevNormals", "Guide normals in world space from the last frame", false, ResourceFormat::RGBA32Float },
+    { kPrevLinearZ,     "gPrevLinearZ", "LinearZ from the last frame", false, ResourceFormat::RG32Float },
     // clang-format on
 };
 
@@ -154,6 +167,11 @@ RenderPassReflection ColorReSTIR::reflect(const CompileData& compileData)
     addRenderPassInputs(reflector, kInputChannels);
     addRenderPassOutputs(reflector, kOutputChannels);
 
+    for (const auto& desc : kInternalChannels)
+    {
+        reflector.addInternal(desc.name, desc.desc).format(desc.format).flags(RenderPassReflection::Field::Flags::Persistent);
+    }
+
     return reflector;
 }
 
@@ -252,9 +270,11 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
             var[desc.texname] = renderData.getTexture(desc.name);
         }
     };
-    for (auto channel : kInputChannels)
+    for (const auto& channel : kInputChannels)
         bind(channel);
-    for (auto channel : kOutputChannels)
+    for (const auto& channel : kOutputChannels)
+        bind(channel);
+    for (const auto& channel : kInternalChannels)
         bind(channel);
 
     // Get dimensions of ray dispatch.
@@ -270,6 +290,9 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
         std::swap(mReSTIRBuffers[0], mReSTIRBuffers[1]);
         mScene->raytrace(pRenderContext, mTracer.program.get(), mTracer.vars, uint3(targetDim, 1));
     }
+
+    pRenderContext->blit(renderData.getTexture(kNormals)->getSRV(), renderData.getTexture(kPrevNormals)->getRTV());
+    pRenderContext->blit(renderData.getTexture(kLinearZ)->getSRV(), renderData.getTexture(kPrevLinearZ)->getRTV());
 
     mFrameCount++;
 }
