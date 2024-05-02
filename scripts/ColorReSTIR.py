@@ -9,7 +9,6 @@ def render_graph_ColorReSTIR():
     g.create_pass('AccumulatePass', 'AccumulatePass', {'enabled': False, 'outputSize': 'Default', 'autoReset': True, 'precisionMode': 'Single', 'maxFrameCount': 0, 'overflowMode': 'Stop'})
     g.add_edge('ColorReSTIR.color', 'AccumulatePass.input')
     g.add_edge('AccumulatePass.output', 'ToneMapper.src')
-    g.add_edge('GBufferRaster.viewW', 'ColorReSTIR.viewW')
     g.add_edge('GBufferRaster.mvec', 'ColorReSTIR.mvec')
     g.add_edge('GBufferRaster.vbuffer', 'ColorReSTIR.vbuffer')
     g.add_edge('GBufferRaster.guideNormalW', 'ColorReSTIR.guideNormalW')
