@@ -59,13 +59,14 @@
 #include "Scene/SceneDefines.slangh"
 #include "Utils/Math/MathConstants.slangh"
 
+import Rendering.Lights.EnvMapSampler;
+import Rendering.Lights.LightHelpers;
 import Scene.Raytracing;
 import Scene.Intersection;
 import Utils.Color.ColorHelpers;
 import Utils.Math.MathHelpers;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Sampling.SampleGenerator;
-import Rendering.Lights.LightHelpers;
 
 cbuffer CB
 {
@@ -80,6 +81,8 @@ cbuffer CB
     uint gMaxSpatialSearch;
     uint gSpatialRadius;
 }
+
+uniform EnvMapSampler gEnvMapSampler;
 
 // Inputs
 Texture2D<PackedHitInfo> gVBuffer;
@@ -628,9 +631,10 @@ void sampleAnalyticalLight(inout SampleGenerator sg, out uint lightIndex, out fl
 
 void sampleEnvMap(inout SampleGenerator sg, out float3 dir, out float invPdf)
 {
-    // TODO: sample brdf
-    invPdf = 4 * M_PI;
-    dir = sample_sphere(sampleNext2D(sg));
+    EnvMapSample sample;
+    gEnvMapSampler.sample(sampleNext2D(sg), sample);
+    dir = sample.dir;
+    invPdf = 1.f / sample.pdf;
 }
 
 void sampleAllLights(inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)

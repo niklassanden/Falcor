@@ -265,6 +265,15 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     var["CB"][kSpatialRadius] = mConfig.spatialRadius;
 
+    if (mScene->useEnvLight())
+    {
+        if (!mEnvMapSampler || mEnvMapSampler->getEnvMap() != mScene->getEnvMap())
+        {
+            mEnvMapSampler = std::make_unique<EnvMapSampler>(mpDevice, mScene->getEnvMap());
+            mEnvMapSampler->bindShaderData(var["gEnvMapSampler"]);
+        }
+    }
+
     // Bind I/O buffers. These needs to be done per-frame as the buffers may change anytime.
     auto bind = [&](const ChannelDesc& desc)
     {
