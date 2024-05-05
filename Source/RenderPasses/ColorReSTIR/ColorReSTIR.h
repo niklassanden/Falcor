@@ -88,6 +88,7 @@ private:
         uint spatialReuse = 1;
         uint maxSpatialSearch = 10;
         uint spatialRadius = 20;
+        bool channelReuse = true;
     } mConfig;
     struct
     {

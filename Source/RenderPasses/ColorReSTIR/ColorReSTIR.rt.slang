@@ -80,6 +80,7 @@ cbuffer CB
     bool gTemporalReuse;
     uint gMaxSpatialSearch;
     uint gSpatialRadius;
+    bool gChannelReuse;
 }
 
 uniform EnvMapSampler gEnvMapSampler;
@@ -842,7 +843,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             gReSTIR[toIndex(pixel, frameDim)] = points[0].r;
 
             // Channel
-            {
+            if (gChannelReuse) {
                 Reservoir::Builder builders[channels];
                 for (int b = 0; b < channels; ++b)
                 {

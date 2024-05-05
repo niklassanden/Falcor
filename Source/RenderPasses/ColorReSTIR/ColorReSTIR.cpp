@@ -89,6 +89,7 @@ const char kTemporalReuse[] = "gTemporalReuse";
 const char kSpatialReuse[] = "SPATIAL_REUSE";
 const char kMaxSpatialSearch[] = "gMaxSpatialSearch";
 const char kSpatialRadius[] = "gSpatialRadius";
+const char kChannelReuse[] = "gChannelReuse";
 
 struct ReSTIRSample
 {
@@ -139,6 +140,8 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mConfig.maxSpatialSearch = value;
         else if (key == kSpatialRadius)
             mConfig.spatialRadius = value;
+        else if (key == kChannelReuse)
+            mConfig.channelReuse = value;
         else
             logWarning("Unknown property '{}' in ColorReSTIR properties.", key);
     }
@@ -159,6 +162,7 @@ Properties ColorReSTIR::getProperties() const
     props[kSpatialReuse] = mConfig.spatialReuse;
     props[kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     props[kSpatialRadius] = mConfig.spatialRadius;
+    props[kChannelReuse] = mConfig.channelReuse;
 
     return props;
 }
@@ -265,6 +269,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"][kTemporalReuse] = mConfig.temporalReuse;
     var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     var["CB"][kSpatialRadius] = mConfig.spatialRadius;
+    var["CB"][kChannelReuse] = mConfig.channelReuse;
 
     if (mScene->useEnvLight())
     {
@@ -363,6 +368,9 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.var("Spatial radius", mConfig.spatialRadius, 0u, 1u << 16);
     widget.tooltip("The radius for spatial reuse measured in pixels.", true);
+
+    dirty |= widget.checkbox("Channel reuse", mConfig.channelReuse);
+    widget.tooltip("Whether or not to do channel reuse.", true);
 
     // If rendering options that modify the output have changed, set flag to indicate that.
     // In execute() we will pass the flag to other passes for reset of temporal data etc.
