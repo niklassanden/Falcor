@@ -44,24 +44,28 @@ const uint32_t kMaxPayloadSizeBytes = 72u;
 const uint32_t kMaxRecursionDepth = 2u;
 
 const char kInputViewDir[] = "viewW";
-const char kLinearZ[] = "linearZ";
 const char kNormals[] = "guideNormalW";
+const char kLinearZ[] = "linearZ";
+const char kPosW[] = "posW";
 const ChannelList kInputChannels = {
     // clang-format off
     { "vbuffer",        "gVBuffer",     "Visibility buffer in packed format" },
     { "mvec",           "gMVec",        "Motion vectors" },
     { kNormals,         "gNormals",     "Guide normals in world space" },
     { kLinearZ,         "gLinearZ",     "Linear depth and its derivative" },
+    { kPosW,            "gPosW",        "World position" },
     { kInputViewDir,    "gViewW",       "World-space view direction (xyz float format)", true /* optional */ },
     // clang-format on
 };
 
 const char kPrevNormals[] = "prevGuideNormalW";
 const char kPrevLinearZ[] = "prevLinearZ";
+const char kPrevPosW[] = "prevPosW";
 const ChannelList kInternalChannels = {
     // clang-format off
     { kPrevNormals,     "gPrevNormals", "Guide normals in world space from the last frame", false, ResourceFormat::RGBA32Float },
     { kPrevLinearZ,     "gPrevLinearZ", "LinearZ from the last frame", false, ResourceFormat::RG32Float },
+    { kPrevPosW,        "gPrevPosW",    "World position from the last frame", false, ResourceFormat::RGBA32Float },
     // clang-format on
 };
 
@@ -292,6 +296,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
 
     pRenderContext->blit(renderData.getTexture(kNormals)->getSRV(), renderData.getTexture(kPrevNormals)->getRTV());
     pRenderContext->blit(renderData.getTexture(kLinearZ)->getSRV(), renderData.getTexture(kPrevLinearZ)->getRTV());
+    pRenderContext->blit(renderData.getTexture(kPosW)->getSRV(), renderData.getTexture(kPrevPosW)->getRTV());
 
     mFrameCount++;
 }

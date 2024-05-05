@@ -15,6 +15,7 @@ def render_graph_ColorReSTIR():
     g.add_edge('GBufferRT.linearZ', 'ColorReSTIR.linearZ')
     g.add_edge('GBufferRT.mvec', 'ColorReSTIR.mvec')
     g.add_edge('GBufferRT.vbuffer', 'ColorReSTIR.vbuffer')
+    g.add_edge('GBufferRT.posW', 'ColorReSTIR.posW')
     g.mark_output('ToneMapper.dst')
     return g
 
