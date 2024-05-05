@@ -181,11 +181,12 @@ RenderPassReflection ColorReSTIR::reflect(const CompileData& compileData)
 void ColorReSTIR::compile(RenderContext* pRenderContext, const CompileData& compileData)
 {
     const size_t count = compileData.defaultTexDims.x * compileData.defaultTexDims.y;
-    const std::vector<Reservoir> data(count);
+    const std::vector<Reservoir[3]> data(count);
     const auto defaultFlags = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
     for (size_t i = 0; i < std::size(mReSTIRBuffers); ++i)
     {
-        mReSTIRBuffers[i] = mpDevice->createStructuredBuffer(sizeof(Reservoir), count, defaultFlags, MemoryType::DeviceLocal, data.data());
+        mReSTIRBuffers[i] =
+            mpDevice->createStructuredBuffer(sizeof(Reservoir[3]), count, defaultFlags, MemoryType::DeviceLocal, data.data());
     }
 }
 
@@ -378,6 +379,7 @@ void ColorReSTIR::setScene(RenderContext* pRenderContext, const ref<Scene>& pSce
     mTracer.program = nullptr;
     mTracer.bindingTable = nullptr;
     mTracer.vars = nullptr;
+    mEnvMapSampler = nullptr;
     mFrameCount = 0;
 
     // Set new scene.
