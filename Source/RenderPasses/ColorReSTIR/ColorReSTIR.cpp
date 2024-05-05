@@ -51,7 +51,6 @@ const ChannelList kInputChannels = {
     { "vbuffer",        "gVBuffer",     "Visibility buffer in packed format" },
     { "mvec",           "gMVec",        "Motion vectors" },
     { kNormals,         "gNormals",     "Guide normals in world space" },
-    { "pnFwidth",       "gPNFWidth",    "Position and guide normal filter width" },
     { kLinearZ,         "gLinearZ",     "Linear depth and its derivative" },
     { kInputViewDir,    "gViewW",       "World-space view direction (xyz float format)", true /* optional */ },
     // clang-format on

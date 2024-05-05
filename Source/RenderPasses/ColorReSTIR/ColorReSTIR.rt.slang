@@ -86,7 +86,6 @@ Texture2D<PackedHitInfo> gVBuffer;
 Texture2D<float2> gMVec;
 Texture2D<float4> gNormals;
 Texture2D<float4> gPrevNormals;
-Texture2D<float2> gPNFWidth; // Position and guide normal filter width
 Texture2D<float2> gLinearZ;
 Texture2D<float2> gPrevLinearZ;
 Texture2D<float4> gViewW; // Optional
@@ -530,29 +529,66 @@ int2 reproject(uint2 pixel, uint2 frameDim)
     return int2(float2(pixel) + gMVec[pixel].xy * frameDim + float2(0.5, 0.5));
 }
 
-bool allowSpatialReuse(uint2 neighbor, float z, float3 normal, float zGrad, float nfWidth)
+float calculateNGrad(uint2 pixel, uint2 frameDim, float3 normal, float z, float zGrad)
+{
+    // Default value
+    float defaultValue = 10;
+    float3 nGrad[2] = {
+        float3(defaultValue),
+        float3(defaultValue),
+    };
+    uint2 neighbors[4] = {
+        pixel + uint2(1, 0),
+        pixel + uint2(-1, 0),
+        pixel + uint2(0, 1),
+        pixel + uint2(0, -1),
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        uint2 neighbor = neighbors[i];
+        if (isInBounds(neighbor, frameDim))
+        {
+            if (abs(gLinearZ[neighbor].x - z) / (zGrad + 1e-2f) <= 2.0f)
+            {
+                float3 otherNormal = gNormals[neighbor].xyz;
+                nGrad[i / 2] = min(nGrad[i / 2], abs(normal - otherNormal));
+            }
+        }
+    }
+
+    if (nGrad[0].x == defaultValue)
+        nGrad[0] = float3(0);
+    if (nGrad[1].x == defaultValue)
+        nGrad[1] = float3(0);
+
+    return length(nGrad[0] + nGrad[1]);
+}
+
+bool allowSpatialReuse(uint2 neighbor, float z, float3 normal, float zGrad, float nGrad)
 {
     // From SVGF
     if (abs(gLinearZ[neighbor].x - z) / (zGrad + 1e-2f) > 10.f)
         return false;
 
-    if (distance(normal, gNormals[neighbor].xyz) / (nfWidth + 1e-2) > 16.0)
+    if (distance(normal, gNormals[neighbor].xyz) / (nGrad + 1e-2) > 16.0)
         return false;
 
     return true;
 }
 
-bool allowTemporalReuse(uint2 prevPixel, uint2 imageDim, float z, float3 normal, float zGrad, float nfWidth)
+bool allowTemporalReuse(uint2 prevPixel, uint2 imageDim, float z, float3 normal, float zGrad, float nGrad)
 {
     // From SVGF
     if (!isInBounds(prevPixel, imageDim))
         return false;
 
     float movedZ = dot(gScene.camera.data.prevPosW - gScene.camera.data.posW, normalize(gScene.camera.data.cameraW));
+    float3 prevDir =
+        float3(gScene.camera.data.viewMat[0][2], gScene.camera.data.viewMat[1][2], gScene.camera.data.viewMat[2][2]);
     if (abs((gPrevLinearZ[prevPixel].x + movedZ) - z) / (zGrad + 1e-2f) > 10.f)
         return false;
 
-    if (distance(normal, gPrevNormals[prevPixel].rgb) / (nfWidth + 1e-2) > 16.0)
+    if (distance(normal, gPrevNormals[prevPixel].rgb) / (nGrad + 1e-2) > 16.0)
         return false;
 
     return true;
@@ -675,7 +711,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
         float z = gLinearZ[pixel].x;
         float zGrad = gLinearZ[pixel].y;
         float3 normal = gNormals[pixel].xyz;
-        float nfWidth = gPNFWidth[pixel].y;
+        float nGrad = calculateNGrad(pixel, frameDim, normal, z, zGrad);
 
         // ReSTIR
         if (gIteration == 0) // Temporal
@@ -696,7 +732,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
 
             // Temporal
             uint2 oldPixel = reproject(pixel, frameDim);
-            var old = gTemporalReuse && allowTemporalReuse(oldPixel, frameDim, z, normal, zGrad, nfWidth)
+            var old = gTemporalReuse && allowTemporalReuse(oldPixel, frameDim, z, normal, zGrad, nGrad)
                           ? gPrevReSTIR[toIndex(oldPixel, frameDim)]
                           : Reservoir();
             float3 phatCandidate = gCandidatesVisibility ? point.r.phat : evalF(point.sd, point.mi, sg, point.r.Y, true);
@@ -723,7 +759,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
                 uint2 neighbor = pixel + int2(offset + sign(offset));
                 if (isInBounds(neighbor, frameDim) && points[pointsCount].initialize(neighbor, frameDim))
                 {
-                    if (allowSpatialReuse(neighbor, z, normal, zGrad, nfWidth))
+                    if (allowSpatialReuse(neighbor, z, normal, zGrad, nGrad))
                     {
                         points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)];
                         ++pointsCount;
