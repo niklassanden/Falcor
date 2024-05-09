@@ -76,6 +76,7 @@ cbuffer CB
     uint gIteration; // ReSTIR iteration
     uint gCandidateCount;
     bool gCandidatesVisibility;
+    bool gReuseCandidates;
     uint gMaxConfidence;
     bool gTemporalReuse;
     uint gMaxSpatialSearch;
@@ -717,6 +718,24 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
     return mi.eval(sd, dir, sg) * Li;
 }
 
+Reservoir getCandidate(ProjectionType proj, ReSTIRPoint point, inout SampleGenerator sg)
+{
+    // Generate the canonical ReSTIR samples
+    var candidateBuilder = Reservoir::Builder(proj);
+    for (int i = 0; i < gCandidateCount; ++i)
+    {
+        ReSTIRSample X;
+        float invPdf;
+        sampleAllLights(sg, X, invPdf);
+        float3 phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility);
+        candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gCandidateCount, phat, sg);
+    }
+    Reservoir candidate = candidateBuilder.build();
+    // Normalize confidence scale so that 1 is one frame of candidates
+    candidate.c = 1;
+    return candidate;
+}
+
 /**
  * This is the main entry point for the minimal path tracer.
  *
@@ -755,22 +774,6 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
         // ReSTIR
         if (gIteration == 0) // Candidate + Temporal
         {
-            // Generate the canonical ReSTIR samples
-            var candidateBuilder = Reservoir::Builder(ProjectionType::Luminance);
-            for (int i = 0; i < gCandidateCount; ++i)
-            {
-                ReSTIRSample X;
-                float invPdf;
-                sampleAllLights(sg, X, invPdf);
-                float3 phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility);
-                candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gCandidateCount, phat, sg);
-            }
-            Reservoir candidate = candidateBuilder.build();
-            // Normalize confidence scale so that 1 is one frame of candidates
-            candidate.c = 1;
-            // Add visibility term if we don't already have it
-            float3 phatCandidate = gCandidatesVisibility ? candidate.phat : evalF(point.sd, point.mi, sg, candidate.Y, true);
-
             uint2 oldPixel = reproject(pixel, frameDim);
             Reservoir old[channels] = {
                 Reservoir(),
@@ -781,8 +784,18 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             {
                 old = gPrevReSTIR[toIndex(oldPixel, frameDim)];
             }
+
+            Reservoir candidate;
+            float3 phatCandidate;
             for (int c = 0; c < channels; ++c)
             {
+                if (c == 0 || !gReuseCandidates)
+                {
+                    candidate = getCandidate(gReuseCandidates ? ProjectionType::Luminance : channelType[c], point, sg);
+                    // Add visibility term if we don't already have it
+                    phatCandidate = gCandidatesVisibility ? candidate.phat : evalF(point.sd, point.mi, sg, candidate.Y, true);
+                }
+
                 float3 phatOld = evalF(point.sd, point.mi, sg, old[c].Y, true);
                 var builder = Reservoir::Builder(channelType[c]);
                 builder.update(candidate, (float)candidate.c / (candidate.c + old[c].c), phatCandidate, sg);
@@ -844,7 +857,8 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             gReSTIR[toIndex(pixel, frameDim)] = points[0].r;
 
             // Channel
-            if (gChannelReuse) {
+            if (gChannelReuse)
+            {
                 Reservoir::Builder builders[channels];
                 for (int b = 0; b < channels; ++b)
                 {
