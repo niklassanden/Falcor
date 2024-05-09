@@ -841,7 +841,8 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
                         float mDenominator = 0.f;
                         for (int j = 0; j < pointsCount; ++j)
                         {
-                            var value = points[j].r[c].c * luminance(evalF(points[j].sd, points[j].mi, sg, points[i].r[c].Y, true));
+                            var value =
+                                points[j].r[c].c * project(channelType[c], evalF(points[j].sd, points[j].mi, sg, points[i].r[c].Y, true));
                             mDenominator += value;
                             if (i == j)
                                 mNumerator += value;
