@@ -74,6 +74,7 @@ cbuffer CB
     uint gPRNGDimension; // First available PRNG dimension.
 
     uint gIteration; // ReSTIR iteration
+    bool gSplitChannels;
     uint gCandidateCount;
     bool gCandidatesVisibility;
     bool gReuseCandidates;

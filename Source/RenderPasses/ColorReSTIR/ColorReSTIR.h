@@ -81,6 +81,7 @@ private:
 
     struct
     {
+        bool splitChannels = true;
         uint candidateCount = 5;
         bool candidatesVisibility = false;
         bool reuseCandidates = true;

@@ -82,6 +82,7 @@ const char kMaxBounces[] = "maxBounces";
 const char kComputeDirect[] = "computeDirect";
 const char kUseImportanceSampling[] = "useImportanceSampling";
 
+const char kSplitChannels[] = "gSplitChannels";
 const char kCandidateCount[] = "gCandidateCount";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
 const char kReuseCandidates[] = "gReuseCandidates";
@@ -127,6 +128,8 @@ void ColorReSTIR::parseProperties(const Properties& props)
         else if (key == kUseImportanceSampling)
             mUseImportanceSampling = value;
 
+        else if (key == kSplitChannels)
+            mConfig.splitChannels = value;
         else if (key == kCandidateCount)
             mConfig.candidateCount = value;
         else if (key == kCandidatesVisibility)
@@ -158,6 +161,7 @@ Properties ColorReSTIR::getProperties() const
     props[kComputeDirect] = mComputeDirect;
     props[kUseImportanceSampling] = mUseImportanceSampling;
 
+    props[kSplitChannels] = mConfig.splitChannels;
     props[kCandidateCount] = mConfig.candidateCount;
     props[kCandidatesVisibility] = mConfig.candidatesVisibility;
     props[kReuseCandidates] = mConfig.reuseCandidates;
@@ -267,6 +271,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     auto var = mTracer.vars->getRootVar();
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
+    var["CB"][kSplitChannels] = mConfig.splitChannels;
     var["CB"][kCandidateCount] = mConfig.candidateCount;
     var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
     var["CB"][kReuseCandidates] = mConfig.reuseCandidates;
@@ -349,6 +354,9 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     dirty |= widget.checkbox("Use importance sampling", mUseImportanceSampling);
     widget.tooltip("Use importance sampling for materials", true);
 
+    dirty |= widget.checkbox("Split channels", mConfig.splitChannels);
+    widget.tooltip("Split the color channels into separate reservoirs.", true);
+
     dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16);
     widget.tooltip("Number of candidate light samples to generate before temporal reuse.", true);
 
@@ -357,6 +365,7 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.checkbox("Reuse candidates", mConfig.reuseCandidates);
     widget.tooltip("Reuse the candidate samples across all reservoirs in a pixel.", true);
+
     dirty |= widget.var("Max confidence", mConfig.maxConfidence, 1u, 1u << 16);
     widget.tooltip("Clamps the confidence to this value. This controls the weight in the temporal accumulation.", true);
 
