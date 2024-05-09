@@ -739,6 +739,7 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
     if (point.initialize(pixel, frameDim))
     {
         // Create sample generator.
+        // Makes sure that each iteration gets a different seed.
         SampleGenerator sg = SampleGenerator(pixel, (gFrameCount + 100) * (gIteration + 1));
 
         // Advance the generator to the first available dimension.
