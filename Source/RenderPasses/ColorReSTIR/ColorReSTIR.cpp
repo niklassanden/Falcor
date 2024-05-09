@@ -82,7 +82,7 @@ const char kMaxBounces[] = "maxBounces";
 const char kComputeDirect[] = "computeDirect";
 const char kUseImportanceSampling[] = "useImportanceSampling";
 
-const char kSplitChannels[] = "gSplitChannels";
+const char kSplitChannels[] = "SPLIT_CHANNELS";
 const char kCandidateCount[] = "gCandidateCount";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
 const char kReuseCandidates[] = "gReuseCandidates";
@@ -247,6 +247,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
 
     // Specialize program.
     // These defines should not modify the program vars. Do not trigger program vars re-creation.
+    mTracer.program->addDefine(kSplitChannels, std::to_string(mDefines.splitChannels));
     mTracer.program->addDefine(kSpatialReuse, std::to_string(mDefines.spatialReuse));
     mTracer.program->addDefine("MAX_BOUNCES", std::to_string(mMaxBounces));
     mTracer.program->addDefine("COMPUTE_DIRECT", mComputeDirect ? "1" : "0");
@@ -271,7 +272,6 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     auto var = mTracer.vars->getRootVar();
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
-    var["CB"][kSplitChannels] = mConfig.splitChannels;
     var["CB"][kCandidateCount] = mConfig.candidateCount;
     var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
     var["CB"][kReuseCandidates] = mConfig.reuseCandidates;
@@ -355,7 +355,7 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     widget.tooltip("Use importance sampling for materials", true);
 
     dirty |= widget.checkbox("Split channels", mConfig.splitChannels);
-    widget.tooltip("Split the color channels into separate reservoirs.", true);
+    widget.tooltip("(Recompiles shaders). Split the color channels into separate reservoirs.", true);
 
     dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16);
     widget.tooltip("Number of candidate light samples to generate before temporal reuse.", true);
@@ -498,10 +498,11 @@ void ColorReSTIR::prepareVars()
 
 bool ColorReSTIR::definesOutdated()
 {
-    return mDefines.spatialReuse != mConfig.spatialReuse;
+    return mDefines.splitChannels != mConfig.splitChannels || mDefines.spatialReuse != mConfig.spatialReuse;
 }
 void ColorReSTIR::updateDefines()
 {
+    mDefines.splitChannels = mConfig.splitChannels;
     mDefines.spatialReuse = mConfig.spatialReuse;
 }
 

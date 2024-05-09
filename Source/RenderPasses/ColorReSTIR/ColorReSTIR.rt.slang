@@ -44,6 +44,7 @@
  *
  * The host sets the following defines:
  *
+ * SPLIT_CHANNELS          Whether or not the color channels should have their own reservoir.
  * MAX_SPATIAL_REUSE       Maximum number of spatial reuses.
  *
  * MAX_BOUNCES             Maximum number of indirect bounces (0 means no indirect).
@@ -74,7 +75,6 @@ cbuffer CB
     uint gPRNGDimension; // First available PRNG dimension.
 
     uint gIteration; // ReSTIR iteration
-    bool gSplitChannels;
     uint gCandidateCount;
     bool gCandidatesVisibility;
     bool gReuseCandidates;
@@ -193,15 +193,22 @@ struct Reservoir
 }
 static const uint channels = 3;
 static const ProjectionType channelType[channels] = {
+#if SPLIT_CHANNELS == 1
     ProjectionType::Red,
     ProjectionType::Green,
     ProjectionType::Blue,
+#else
+    ProjectionType::Luminance,
+    ProjectionType::Luminance,
+    ProjectionType::Luminance,
+#endif
 };
 RWStructuredBuffer<Reservoir[channels]> gReSTIR;
 StructuredBuffer<Reservoir[channels]> gPrevReSTIR;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
+static const bool kSplitChannels = SPLIT_CHANNELS;
 static const uint kSpatialReuse = SPATIAL_REUSE;
 static const uint kMaxBounces = MAX_BOUNCES;
 static const bool kComputeDirect = COMPUTE_DIRECT;
@@ -869,9 +876,13 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
                     {
                         float3 phat = points[0].r[c].phat;
                         float projected = project(channelType[c], phat);
+#if SPLIT_CHANNELS == 1
                         builders[b].update(
                             points[0].r[c], projected == 0 ? 0 : projected / (phat.x + phat.y + phat.z), project(channelType[b], phat), sg
                         );
+#else
+                        builders[b].update(points[0].r[c], 1 / 3.f, projected, sg);
+#endif
                     }
                 }
                 for (int b = 0; b < channels; ++b)
@@ -885,7 +896,11 @@ float3 tracePath(const uint2 pixel, const uint2 frameDim)
             outColor = float3(0);
             for (int c = 0; c < channels; ++c)
             {
+#if SPLIT_CHANNELS == 1
                 outColor += projectVec(channelType[c], evalF(points[0].sd, points[0].mi, sg, points[0].r[c].Y, true)) * points[0].r[c].W;
+#else
+                outColor += (evalF(points[0].sd, points[0].mi, sg, points[0].r[c].Y, true) * points[0].r[c].W) / channels;
+#endif
             }
         }
 

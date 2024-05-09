@@ -94,6 +94,7 @@ private:
     } mConfig;
     struct
     {
+        bool splitChannels = true;
         uint spatialReuse = 1;
     } mDefines;
 
