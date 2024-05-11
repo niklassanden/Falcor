@@ -79,10 +79,6 @@ const ChannelList kOutputChannels = {
 const char kReSTIR[] = "gReSTIR";
 const char kPrevReSTIR[] = "gPrevReSTIR";
 
-const char kMaxBounces[] = "maxBounces";
-const char kComputeDirect[] = "computeDirect";
-const char kUseImportanceSampling[] = "useImportanceSampling";
-
 const char kSplitChannels[] = "SPLIT_CHANNELS";
 const char kCandidateCount[] = "gCandidateCount";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
@@ -93,6 +89,11 @@ const char kSpatialReuse[] = "SPATIAL_REUSE";
 const char kMaxSpatialSearch[] = "gMaxSpatialSearch";
 const char kSpatialRadius[] = "gSpatialRadius";
 const char kChannelReuse[] = "gChannelReuse";
+
+// MinimalPathTracer
+const char kMaxBounces[] = "maxBounces";
+const char kComputeDirect[] = "computeDirect";
+const char kUseImportanceSampling[] = "useImportanceSampling";
 
 struct ReSTIRSample
 {
@@ -131,14 +132,7 @@ void ColorReSTIR::parseProperties(const Properties& props)
 {
     for (const auto& [key, value] : props)
     {
-        if (key == kMaxBounces)
-            mMaxBounces = value;
-        else if (key == kComputeDirect)
-            mComputeDirect = value;
-        else if (key == kUseImportanceSampling)
-            mUseImportanceSampling = value;
-
-        else if (key == kSplitChannels)
+        if (key == kSplitChannels)
             mConfig.splitChannels = value;
         else if (key == kCandidateCount)
             mConfig.candidateCount = value;
@@ -158,6 +152,15 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mConfig.spatialRadius = value;
         else if (key == kChannelReuse)
             mConfig.channelReuse = value;
+
+        // MinimalPathTracer
+        else if (key == kMaxBounces)
+            mMaxBounces = value;
+        else if (key == kComputeDirect)
+            mComputeDirect = value;
+        else if (key == kUseImportanceSampling)
+            mUseImportanceSampling = value;
+
         else
             logWarning("Unknown property '{}' in ColorReSTIR properties.", key);
     }
@@ -167,10 +170,6 @@ void ColorReSTIR::parseProperties(const Properties& props)
 Properties ColorReSTIR::getProperties() const
 {
     Properties props;
-    props[kMaxBounces] = mMaxBounces;
-    props[kComputeDirect] = mComputeDirect;
-    props[kUseImportanceSampling] = mUseImportanceSampling;
-
     props[kSplitChannels] = mConfig.splitChannels;
     props[kCandidateCount] = mConfig.candidateCount;
     props[kCandidatesVisibility] = mConfig.candidatesVisibility;
@@ -181,6 +180,11 @@ Properties ColorReSTIR::getProperties() const
     props[kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     props[kSpatialRadius] = mConfig.spatialRadius;
     props[kChannelReuse] = mConfig.channelReuse;
+
+    // MinimalPathTracer
+    props[kMaxBounces] = mMaxBounces;
+    props[kComputeDirect] = mComputeDirect;
+    props[kUseImportanceSampling] = mUseImportanceSampling;
 
     return props;
 }
@@ -258,6 +262,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     // These defines should not modify the program vars. Do not trigger program vars re-creation.
     mTracer.program->addDefine(kSplitChannels, std::to_string(mDefines.splitChannels));
     mTracer.program->addDefine(kSpatialReuse, std::to_string(mDefines.spatialReuse));
+    // MinimalPathTracer
     mTracer.program->addDefine("MAX_BOUNCES", std::to_string(mMaxBounces));
     mTracer.program->addDefine("COMPUTE_DIRECT", mComputeDirect ? "1" : "0");
     mTracer.program->addDefine("USE_IMPORTANCE_SAMPLING", mUseImportanceSampling ? "1" : "0");
@@ -354,15 +359,6 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
         }
     }
 
-    dirty |= widget.var("Max bounces", mMaxBounces, 0u, 1u << 16);
-    widget.tooltip("Maximum path length for indirect illumination.\n0 = direct only\n1 = one indirect bounce etc.", true);
-
-    dirty |= widget.checkbox("Evaluate direct illumination", mComputeDirect);
-    widget.tooltip("Compute direct illumination.\nIf disabled only indirect is computed (when max bounces > 0).", true);
-
-    dirty |= widget.checkbox("Use importance sampling", mUseImportanceSampling);
-    widget.tooltip("Use importance sampling for materials", true);
-
     dirty |= widget.checkbox("Split channels", mConfig.splitChannels);
     widget.tooltip("(Recompiles shaders). Split the color channels into separate reservoirs.", true);
 
@@ -396,6 +392,19 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.checkbox("Channel reuse", mConfig.channelReuse);
     widget.tooltip("Whether or not to do channel reuse.", true);
+
+    // Minimal Path Tracer
+    {
+        auto group = widget.group("Minimal Path Tracer Options", false);
+        dirty |= group.var("Max bounces", mMaxBounces, 0u, 1u << 16);
+        group.tooltip("Maximum path length for indirect illumination.\n0 = direct only\n1 = one indirect bounce etc.", true);
+
+        dirty |= group.checkbox("Evaluate direct illumination", mComputeDirect);
+        group.tooltip("Compute direct illumination.\nIf disabled only indirect is computed (when max bounces > 0).", true);
+
+        dirty |= group.checkbox("Use importance sampling", mUseImportanceSampling);
+        group.tooltip("Use importance sampling for materials", true);
+    }
 
     // If rendering options that modify the output have changed, set flag to indicate that.
     // In execute() we will pass the flag to other passes for reset of temporal data etc.
