@@ -453,7 +453,6 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
  */
 void handleHit(const HitInfo hit, inout ScatterRayData rayData)
 {
-    return;
     const bool isCurveHit = hit.getType() == HitType::Curve;
     let lod = ExplicitLodTextureSampler(0.f);
 
@@ -881,36 +880,6 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
                 output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W;
             }
         }
-
-        /*
-        if (kComputeDirect)
-        {
-            // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
-            outColor += mi.getProperties(sd).emission;
-
-            // Add contribution of direct light from analytic lights.
-            // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
-            outColor += kUseAnalyticLights ? evalDirectAnalytic(sd, mi, sg) : float3(0.f);
-        }
-
-        // Prepare ray payload.
-        ScatterRayData rayData = ScatterRayData(sg);
-
-        // Generate scatter ray.
-        if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
-            rayData.terminated = true;
-
-        // Follow path into the scene and compute its total contribution.
-        for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
-        {
-            // Trace scatter ray. If it hits geometry, the closest hit shader samples
-            // direct illumination and generates the next scatter ray.
-            traceScatterRay(rayData);
-        }
-
-        // Store contribution from scatter ray.
-        outColor += rayData.radiance;
-        */
     }
     else
     {
