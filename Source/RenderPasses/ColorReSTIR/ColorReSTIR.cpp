@@ -101,12 +101,21 @@ struct ReSTIRSample
     float3 dir{0, 0, 0}; // environment
                          // todo: emissive
 };
+struct LightColor
+{
+    float3 color{0, 0, 0};
+};
 struct Reservoir
 {
     ReSTIRSample Y{};
     float W{0.0f};
     int c{0};
-    float3 phat{0, 0, 0};
+    float phat{0};
+};
+struct Temporal
+{
+    Reservoir r;
+    LightColor c;
 };
 } // namespace
 
@@ -194,12 +203,11 @@ RenderPassReflection ColorReSTIR::reflect(const CompileData& compileData)
 void ColorReSTIR::compile(RenderContext* pRenderContext, const CompileData& compileData)
 {
     const size_t count = compileData.defaultTexDims.x * compileData.defaultTexDims.y;
-    const std::vector<Reservoir[3]> data(count);
+    const std::vector<Temporal> data(count);
     const auto defaultFlags = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
     for (size_t i = 0; i < std::size(mReSTIRBuffers); ++i)
     {
-        mReSTIRBuffers[i] =
-            mpDevice->createStructuredBuffer(sizeof(Reservoir[3]), count, defaultFlags, MemoryType::DeviceLocal, data.data());
+        mReSTIRBuffers[i] = mpDevice->createStructuredBuffer(sizeof(Temporal), count, defaultFlags, MemoryType::DeviceLocal, data.data());
     }
 }
 

@@ -190,8 +190,19 @@ struct Reservoir
         phat = phat_;
     }
 }
-RWStructuredBuffer<Reservoir> gReSTIR;
-StructuredBuffer<Reservoir> gPrevReSTIR;
+struct Temporal
+{
+    Reservoir r;
+    LightColor c;
+
+    __init(Reservoir r_ = Reservoir(), LightColor c_ = LightColor())
+    {
+        r = r_;
+        c = c_;
+    }
+}
+RWStructuredBuffer<Temporal> gReSTIR;
+StructuredBuffer<Temporal> gPrevReSTIR;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
@@ -785,30 +796,26 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
             LightColor candidateColor = LightColor(evalF(point.sd, point.mi, sg, candidate.Y, true));
 
             uint2 oldPixel = reproject(pixel, frameDim);
-            Reservoir old = Reservoir();
-            LightColor oldColor = LightColor();
+            Temporal old = Temporal();
             if (gTemporalReuse && grads.allowTemporalReuse(pixel, oldPixel, frameDim, z, normal))
             {
                 old = gPrevReSTIR[toIndex(oldPixel, frameDim)];
-                oldColor = reinterpret<LightColor>(gPrevReSTIR[toIndex(oldPixel, frameDim) + frameDim.x * frameDim.y].Y.dir);
             }
 
-            float phatOld = evalPhat(point.sd, point.mi, sg, old.Y, true);
+            float phatOld = evalPhat(point.sd, point.mi, sg, old.r.Y, true);
             var builder = Reservoir::Builder();
-            float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.c), phatCandidate, sg);
-            float wo = builder.update(old, (float)old.c / (candidate.c + old.c), phatOld, sg);
+            float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.r.c), phatCandidate, sg);
+            float wo = builder.update(old.r, (float)old.r.c / (candidate.c + old.r.c), phatOld, sg);
             point.r = builder.build();
-            gReSTIR[toIndex(pixel, frameDim)] = point.r;
-            gReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir =
-                reinterpret<float3>(LightColor::combine(candidateColor, wc, oldColor, wo));
+            gReSTIR[toIndex(pixel, frameDim)] = Temporal(point.r, LightColor::combine(candidateColor, wc, old.c, wo));
         }
         else // Spatial + Channel
         {
             // Spatial
             ReSTIRPoint points[kSpatialReuse + 1];
             points[0] = point;
-            points[0].r = gPrevReSTIR[toIndex(pixel, frameDim)];
-            LightColor color = reinterpret<LightColor>(gPrevReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir);
+            points[0].r = gPrevReSTIR[toIndex(pixel, frameDim)].r;
+            LightColor color = gPrevReSTIR[toIndex(pixel, frameDim)].c;
             int pointsCount = 1;
             for (int i = 0; i < gMaxSpatialSearch && pointsCount <= kSpatialReuse; ++i)
             {
@@ -818,7 +825,7 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
                 {
                     if (grads.allowSpatialReuse(pixel, neighbor, z, normal))
                     {
-                        points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)];
+                        points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)].r;
                         ++pointsCount;
                     }
                 }
@@ -850,8 +857,7 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
                 // color = LightColor::combine(color, ws[0], LightColor(evalF(points[0].sd, points[0].mi, sg, points[1].r.Y, true)), ws[1] /
                 // max(1, points[1].r.c));
             }
-            gReSTIR[toIndex(pixel, frameDim)] = points[0].r;
-            gReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir = color.color;
+            gReSTIR[toIndex(pixel, frameDim)] = Temporal(points[0].r, color);
 
             {
                 var props = point.mi.getProperties(point.sd);
@@ -863,12 +869,11 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
             {
                 if (gChannelReuse)
                 {
-                    output.color += reinterpret<LightColor>(gReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir)
-                                       .apply(evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W);
+                    output.color += color.apply(evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W);
                 }
                 else
                 {
-                    output.color += color.color;
+                    output.color = color.color;
                 }
             }
             else
@@ -909,7 +914,7 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
     }
     else
     {
-        gReSTIR[toIndex(pixel, frameDim)] = Reservoir();
+        gReSTIR[toIndex(pixel, frameDim)] = Temporal();
         // Background pixel.
         const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
         output.color = kUseEnvBackground ? gScene.envMap.eval(primaryRayDir) : kDefaultBackgroundColor;
