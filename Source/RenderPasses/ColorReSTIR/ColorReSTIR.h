@@ -101,7 +101,6 @@ private:
         OutputMode outputMode = OutputMode::Combined;
         uint candidateCount = 5;
         bool candidatesVisibility = false;
-        bool reuseCandidates = true;
         uint maxConfidence = 20;
         bool temporalReuse = true;
         uint spatialReuse = 1;

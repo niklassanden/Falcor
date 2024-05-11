@@ -73,7 +73,6 @@ cbuffer CB
     OutputMode gOutputMode;
     uint gCandidateCount;
     bool gCandidatesVisibility;
-    bool gReuseCandidates;
     uint gMaxConfidence;
     bool gTemporalReuse;
     uint gMaxSpatialSearch;

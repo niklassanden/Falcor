@@ -82,7 +82,6 @@ const char kPrevReSTIR[] = "gPrevReSTIR";
 const char kOutputMode[] = "gOutputMode";
 const char kCandidateCount[] = "gCandidateCount";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
-const char kReuseCandidates[] = "gReuseCandidates";
 const char kMaxConfidence[] = "gMaxConfidence";
 const char kTemporalReuse[] = "gTemporalReuse";
 const char kSpatialReuse[] = "SPATIAL_REUSE";
@@ -137,8 +136,6 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mConfig.candidateCount = value;
         else if (key == kCandidatesVisibility)
             mConfig.candidatesVisibility = value;
-        else if (key == kReuseCandidates)
-            mConfig.reuseCandidates = value;
         else if (key == kMaxConfidence)
             mConfig.maxConfidence = value;
         else if (key == kTemporalReuse)
@@ -170,7 +167,6 @@ Properties ColorReSTIR::getProperties() const
     props[kOutputMode] = mConfig.outputMode;
     props[kCandidateCount] = mConfig.candidateCount;
     props[kCandidatesVisibility] = mConfig.candidatesVisibility;
-    props[kReuseCandidates] = mConfig.reuseCandidates;
     props[kMaxConfidence] = mConfig.maxConfidence;
     props[kTemporalReuse] = mConfig.temporalReuse;
     props[kSpatialReuse] = mConfig.spatialReuse;
@@ -284,7 +280,6 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
     var["CB"][kCandidateCount] = mConfig.candidateCount;
     var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
-    var["CB"][kReuseCandidates] = mConfig.reuseCandidates;
     var["CB"][kMaxConfidence] = mConfig.maxConfidence;
     var["CB"][kTemporalReuse] = mConfig.temporalReuse;
     var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
@@ -363,9 +358,6 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.checkbox("Candidate visibility", mConfig.candidatesVisibility);
     widget.tooltip("If enabled, each candidate sample will shoot shadow rays to compute visibility.", true);
-
-    dirty |= widget.checkbox("Reuse candidates", mConfig.reuseCandidates);
-    widget.tooltip("Reuse the candidate samples across all reservoirs in a pixel.", true);
 
     dirty |= widget.var("Max confidence", mConfig.maxConfidence, 1u, 1u << 16, intSpeed);
     widget.tooltip("Clamps the confidence to this value. This controls the weight in the temporal accumulation.", true);
