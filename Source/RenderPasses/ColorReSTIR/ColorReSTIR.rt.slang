@@ -31,7 +31,6 @@
  *
  * The host sets the following defines:
  *
- * SPLIT_CHANNELS          Whether or not the color channels should have their own reservoir.
  * MAX_SPATIAL_REUSE       Maximum number of spatial reuses.
  *
  * The following defines are from MinimalPathTracer
@@ -58,12 +57,20 @@ import Utils.Math.MathHelpers;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Sampling.SampleGenerator;
 
+enum class OutputMode : uint32_t
+{
+    Default = 0u,
+    Luminance = 1u,
+    ColorDistribution = 2u,
+    Combined = 3u,
+};
 cbuffer CB
 {
     uint gFrameCount;    // Frame count since scene was loaded.
     uint gPRNGDimension; // First available PRNG dimension.
 
     uint gIteration; // ReSTIR iteration
+    OutputMode gOutputMode;
     uint gCandidateCount;
     bool gCandidatesVisibility;
     bool gReuseCandidates;
@@ -71,7 +78,6 @@ cbuffer CB
     bool gTemporalReuse;
     uint gMaxSpatialSearch;
     uint gSpatialRadius;
-    bool gChannelReuse;
 }
 
 uniform EnvMapSampler gEnvMapSampler;
@@ -195,7 +201,6 @@ StructuredBuffer<Temporal> gPrevReSTIR;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
-static const bool kSplitChannels = SPLIT_CHANNELS;
 static const uint kSpatialReuse = SPATIAL_REUSE;
 
 static const uint kMaxBounces = MAX_BOUNCES;
@@ -662,20 +667,22 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
                 output.albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
                                 props.specularTransmissionAlbedo;
             }
-            if (kSplitChannels)
+            switch (gOutputMode)
             {
-                if (gChannelReuse)
-                {
-                    output.color += color.apply(evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W);
-                }
-                else
-                {
-                    output.color = color.color;
-                }
-            }
-            else
-            {
+            case OutputMode::Default:
                 output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W;
+                break;
+            case OutputMode::ColorDistribution:
+                output.color = color.color;
+                break;
+            case OutputMode::Luminance:
+                output.color = evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W;
+                break;
+            case OutputMode::Combined:
+                output.color += color.apply(evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W);
+                break;
+            default:
+                output.color = float3(0.f);
             }
         }
     }

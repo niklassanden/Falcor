@@ -59,6 +59,23 @@ public:
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
     virtual void onHotReload(HotReloadFlags reloaded) override;
 
+    enum class OutputMode : uint32_t
+    {
+        Default = 0u,
+        Luminance = 1u,
+        ColorDistribution = 2u,
+        Combined = 3u,
+    };
+    FALCOR_ENUM_INFO(
+        OutputMode,
+        {
+            {OutputMode::Default, "Default"},
+            {OutputMode::Luminance, "Luminance"},
+            {OutputMode::ColorDistribution, "ColorDistribution"},
+            {OutputMode::Combined, "Combined"},
+        }
+    );
+
 private:
     void parseProperties(const Properties& props);
     void prepareVars();
@@ -81,7 +98,7 @@ private:
 
     struct
     {
-        bool splitChannels = true;
+        OutputMode outputMode = OutputMode::Combined;
         uint candidateCount = 5;
         bool candidatesVisibility = false;
         bool reuseCandidates = true;
@@ -90,11 +107,9 @@ private:
         uint spatialReuse = 1;
         uint maxSpatialSearch = 10;
         uint spatialRadius = 20;
-        bool channelReuse = true;
     } mConfig;
     struct
     {
-        bool splitChannels = true;
         uint spatialReuse = 1;
     } mDefines;
 
@@ -120,3 +135,4 @@ private:
         ref<RtProgramVars> vars;
     } mTracer;
 };
+FALCOR_ENUM_REGISTER(ColorReSTIR::OutputMode);

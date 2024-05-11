@@ -79,7 +79,7 @@ const ChannelList kOutputChannels = {
 const char kReSTIR[] = "gReSTIR";
 const char kPrevReSTIR[] = "gPrevReSTIR";
 
-const char kSplitChannels[] = "SPLIT_CHANNELS";
+const char kOutputMode[] = "gOutputMode";
 const char kCandidateCount[] = "gCandidateCount";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
 const char kReuseCandidates[] = "gReuseCandidates";
@@ -88,7 +88,6 @@ const char kTemporalReuse[] = "gTemporalReuse";
 const char kSpatialReuse[] = "SPATIAL_REUSE";
 const char kMaxSpatialSearch[] = "gMaxSpatialSearch";
 const char kSpatialRadius[] = "gSpatialRadius";
-const char kChannelReuse[] = "gChannelReuse";
 
 // MinimalPathTracer
 const char kMaxBounces[] = "maxBounces";
@@ -132,8 +131,8 @@ void ColorReSTIR::parseProperties(const Properties& props)
 {
     for (const auto& [key, value] : props)
     {
-        if (key == kSplitChannels)
-            mConfig.splitChannels = value;
+        if (key == kOutputMode)
+            mConfig.outputMode = value;
         else if (key == kCandidateCount)
             mConfig.candidateCount = value;
         else if (key == kCandidatesVisibility)
@@ -150,8 +149,6 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mConfig.maxSpatialSearch = value;
         else if (key == kSpatialRadius)
             mConfig.spatialRadius = value;
-        else if (key == kChannelReuse)
-            mConfig.channelReuse = value;
 
         // MinimalPathTracer
         else if (key == kMaxBounces)
@@ -170,7 +167,7 @@ void ColorReSTIR::parseProperties(const Properties& props)
 Properties ColorReSTIR::getProperties() const
 {
     Properties props;
-    props[kSplitChannels] = mConfig.splitChannels;
+    props[kOutputMode] = mConfig.outputMode;
     props[kCandidateCount] = mConfig.candidateCount;
     props[kCandidatesVisibility] = mConfig.candidatesVisibility;
     props[kReuseCandidates] = mConfig.reuseCandidates;
@@ -179,7 +176,6 @@ Properties ColorReSTIR::getProperties() const
     props[kSpatialReuse] = mConfig.spatialReuse;
     props[kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     props[kSpatialRadius] = mConfig.spatialRadius;
-    props[kChannelReuse] = mConfig.channelReuse;
 
     // MinimalPathTracer
     props[kMaxBounces] = mMaxBounces;
@@ -260,7 +256,6 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
 
     // Specialize program.
     // These defines should not modify the program vars. Do not trigger program vars re-creation.
-    mTracer.program->addDefine(kSplitChannels, std::to_string(mDefines.splitChannels));
     mTracer.program->addDefine(kSpatialReuse, std::to_string(mDefines.spatialReuse));
     // MinimalPathTracer
     mTracer.program->addDefine("MAX_BOUNCES", std::to_string(mMaxBounces));
@@ -286,6 +281,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     auto var = mTracer.vars->getRootVar();
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
+    var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
     var["CB"][kCandidateCount] = mConfig.candidateCount;
     var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
     var["CB"][kReuseCandidates] = mConfig.reuseCandidates;
@@ -293,7 +289,6 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"][kTemporalReuse] = mConfig.temporalReuse;
     var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     var["CB"][kSpatialRadius] = mConfig.spatialRadius;
-    var["CB"][kChannelReuse] = mConfig.channelReuse;
 
     if (mScene->useEnvLight())
     {
@@ -359,8 +354,8 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
         }
     }
 
-    dirty |= widget.checkbox("Split channels", mConfig.splitChannels);
-    widget.tooltip("(Recompiles shaders). Split the color channels into separate reservoirs.", true);
+    dirty |= widget.dropdown("Output Mode", mConfig.outputMode);
+    // widget.tooltip("Mode", true);
 
     dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16);
     widget.tooltip("Number of candidate light samples to generate before temporal reuse.", true);
@@ -389,9 +384,6 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.var("Spatial radius", mConfig.spatialRadius, 0u, 1u << 16);
     widget.tooltip("The radius for spatial reuse measured in pixels.", true);
-
-    dirty |= widget.checkbox("Channel reuse", mConfig.channelReuse);
-    widget.tooltip("Whether or not to do channel reuse.", true);
 
     // Minimal Path Tracer
     {
@@ -516,11 +508,10 @@ void ColorReSTIR::prepareVars()
 
 bool ColorReSTIR::definesOutdated()
 {
-    return mDefines.splitChannels != mConfig.splitChannels || mDefines.spatialReuse != mConfig.spatialReuse;
+    return mDefines.spatialReuse != mConfig.spatialReuse;
 }
 void ColorReSTIR::updateDefines()
 {
-    mDefines.splitChannels = mConfig.splitChannels;
     mDefines.spatialReuse = mConfig.spatialReuse;
 }
 
