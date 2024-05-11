@@ -100,7 +100,6 @@ Texture2D<float4> gViewW; // Optional
 
 // Outputs
 RWTexture2D<float4> gOutputColor;
-RWTexture2D<float4> gOutputAlbedo;
 
 // Internals
 struct ReSTIRSample
@@ -117,58 +116,57 @@ struct ReSTIRSample
         dir = dir_;
     }
 }
-struct LightColor
+enum ProjectionType
 {
-    float3 color;
-
-    __init(float3 light = float3(0.f))
-    {
-        float denom = light.r + light.g + light.b;
-        color = denom == 0 ? light : light / denom;
-    }
-
-    float3 apply(float light) { return light * color; }
-
-    static LightColor combine(LightColor a, float wa, LightColor b, float wb) { return LightColor(a.color * wa + b.color * wb); }
-
-    struct Builder
-    {
-        float3 color;
-
-        __init(float3 color_ = float3(0.f)) { color = color_; }
-
-        Builder update(LightColor light, float weight) { return Builder(color + light.apply(weight)); }
-
-        LightColor build() { return LightColor(color); }
-    }
+    Luminance,
+    Red,
+    Green,
+    Blue,
+}
+static const float3 projections[4] = {
+    float3(0.2126f, 0.7152f, 0.0722f), // luminance
+    float3(1.f, 0.f, 0.f),             // red
+    float3(0.f, 1.f, 0.f),             // green
+    float3(0.f, 0.f, 1.f),             // blue
+};
+float project(ProjectionType proj, float3 phat)
+{
+    return dot(projections[(int)proj], phat);
+}
+float3 projectVec(ProjectionType proj, float3 phat)
+{
+    float3 dir = projections[(int)proj];
+    return dir * dot(dir, phat);
 }
 struct Reservoir
 {
     ReSTIRSample Y;
     float W;
     int c;
-    float phat;
+    float3 phat;
 
     struct Builder
     {
         ReSTIRSample Y;
         float Wsum;
         int c;
-        float phat;
+        float3 phat;
+        ProjectionType proj;
 
-        __init()
+        __init(ProjectionType proj_)
         {
             Y = ReSTIRSample();
             Wsum = 0.f;
             c = 0;
-            phat = 0.f;
+            phat = float3(0.f, 0.f, 0.f);
+            proj = proj_;
         }
 
-        /// Also returns the weight w_i
         [mutating]
-        float update(Reservoir r, float m, float phat_, inout SampleGenerator sg)
+        void update(Reservoir r, float m, float3 phat_, inout SampleGenerator sg)
         {
-            float wi = m * phat_ * r.W;
+            float projection = project(proj, phat_);
+            float wi = m * projection * r.W;
             Wsum += wi;
             c += r.c;
             if (sampleNext1D(sg) * Wsum < wi)
@@ -176,13 +174,16 @@ struct Reservoir
                 Y = r.Y;
                 phat = phat_;
             }
-            return wi;
         }
 
-        Reservoir build() { return Reservoir(Y, phat == 0 ? 0 : Wsum / phat, min(c, gMaxConfidence), phat); }
+        Reservoir build()
+        {
+            float projection = project(proj, phat);
+            return Reservoir(Y, projection == 0 ? 0 : Wsum / projection, min(c, gMaxConfidence), phat);
+        }
     }
 
-    __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float phat_ = 0.f)
+    __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float3 phat_ = float3(0.f, 0.f, 0.f))
     {
         Y = Y_;
         W = W_;
@@ -190,8 +191,20 @@ struct Reservoir
         phat = phat_;
     }
 }
-RWStructuredBuffer<Reservoir> gReSTIR;
-StructuredBuffer<Reservoir> gPrevReSTIR;
+static const uint channels = 3;
+static const ProjectionType channelType[channels] = {
+#if SPLIT_CHANNELS == 1
+    ProjectionType::Red,
+    ProjectionType::Green,
+    ProjectionType::Blue,
+#else
+    ProjectionType::Luminance,
+    ProjectionType::Luminance,
+    ProjectionType::Luminance,
+#endif
+};
+RWStructuredBuffer<Reservoir[channels]> gReSTIR;
+StructuredBuffer<Reservoir[channels]> gPrevReSTIR;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
@@ -514,7 +527,7 @@ struct ReSTIRPoint
 {
     ShadingData sd;
     IMaterialInstance mi;
-    Reservoir r;
+    Reservoir r[channels];
 
     [mutating]
     bool initialize(uint2 pixel, uint2 frameDim)
@@ -712,22 +725,17 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
     // Evaluate contribution.
     return mi.eval(sd, dir, sg) * Li;
 }
-float evalPhat(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
-{
-    float3 value = evalF(sd, mi, sg, X, checkVisibility);
-    return value.r + value.g + value.b;
-}
 
-Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
+Reservoir getCandidate(ProjectionType proj, ReSTIRPoint point, inout SampleGenerator sg)
 {
     // Generate the canonical ReSTIR samples
-    var candidateBuilder = Reservoir::Builder();
+    var candidateBuilder = Reservoir::Builder(proj);
     for (int i = 0; i < gCandidateCount; ++i)
     {
         ReSTIRSample X;
         float invPdf;
         sampleAllLights(sg, X, invPdf);
-        float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
+        float3 phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility);
         candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gCandidateCount, phat, sg);
     }
     Reservoir candidate = candidateBuilder.build();
@@ -736,11 +744,6 @@ Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
     return candidate;
 }
 
-struct Output
-{
-    float3 color;
-    float3 albedo;
-}
 /**
  * This is the main entry point for the minimal path tracer.
  *
@@ -755,9 +758,9 @@ struct Output
  * @param[in] frameDim Dimension of the frame in pixels.
  * @return Returns the estimated color (radiance).
  */
-Output tracePath(const uint2 pixel, const uint2 frameDim)
+float3 tracePath(const uint2 pixel, const uint2 frameDim)
 {
-    Output output = Output(float3(0.f), float3(0.f));
+    float3 outColor = float3(0.f);
 
     ReSTIRPoint point;
     if (point.initialize(pixel, frameDim))
@@ -779,28 +782,35 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
         // ReSTIR
         if (gIteration == 0) // Candidate + Temporal
         {
-            Reservoir candidate = getCandidate(point, sg);
-            // Add visibility term if we don't already have it
-            float phatCandidate = gCandidatesVisibility ? candidate.phat : evalPhat(point.sd, point.mi, sg, candidate.Y, true);
-            LightColor candidateColor = LightColor(evalF(point.sd, point.mi, sg, candidate.Y, true));
-
             uint2 oldPixel = reproject(pixel, frameDim);
-            Reservoir old = Reservoir();
-            LightColor oldColor = LightColor();
+            Reservoir old[channels] = {
+                Reservoir(),
+                Reservoir(),
+                Reservoir(),
+            };
             if (gTemporalReuse && grads.allowTemporalReuse(pixel, oldPixel, frameDim, z, normal))
             {
                 old = gPrevReSTIR[toIndex(oldPixel, frameDim)];
-                oldColor = reinterpret<LightColor>(gPrevReSTIR[toIndex(oldPixel, frameDim) + frameDim.x * frameDim.y].Y.dir);
             }
 
-            float phatOld = evalPhat(point.sd, point.mi, sg, old.Y, true);
-            var builder = Reservoir::Builder();
-            float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.c), phatCandidate, sg);
-            float wo = builder.update(old, (float)old.c / (candidate.c + old.c), phatOld, sg);
-            point.r = builder.build();
+            Reservoir candidate;
+            float3 phatCandidate;
+            for (int c = 0; c < channels; ++c)
+            {
+                if (c == 0 || !gReuseCandidates)
+                {
+                    candidate = getCandidate(gReuseCandidates ? ProjectionType::Luminance : channelType[c], point, sg);
+                    // Add visibility term if we don't already have it
+                    phatCandidate = gCandidatesVisibility ? candidate.phat : evalF(point.sd, point.mi, sg, candidate.Y, true);
+                }
+
+                float3 phatOld = evalF(point.sd, point.mi, sg, old[c].Y, true);
+                var builder = Reservoir::Builder(channelType[c]);
+                builder.update(candidate, (float)candidate.c / (candidate.c + old[c].c), phatCandidate, sg);
+                builder.update(old[c], (float)old[c].c / (candidate.c + old[c].c), phatOld, sg);
+                point.r[c] = builder.build();
+            }
             gReSTIR[toIndex(pixel, frameDim)] = point.r;
-            gReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir =
-                reinterpret<float3>(LightColor::combine(candidateColor, wc, oldColor, wo));
         }
         else // Spatial + Channel
         {
@@ -808,7 +818,6 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
             ReSTIRPoint points[kSpatialReuse + 1];
             points[0] = point;
             points[0].r = gPrevReSTIR[toIndex(pixel, frameDim)];
-            LightColor color = reinterpret<LightColor>(gPrevReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir);
             int pointsCount = 1;
             for (int i = 0; i < gMaxSpatialSearch && pointsCount <= kSpatialReuse; ++i)
             {
@@ -825,55 +834,73 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
             }
             if (pointsCount > 1)
             {
-                var builder = Reservoir::Builder();
-                float ws[2];
-                for (int i = 0; i < pointsCount; ++i)
+                for (int c = 0; c < channels; ++c)
                 {
-                    float phat = evalPhat(points[0].sd, points[0].mi, sg, points[i].r.Y, true);
-                    float mNumerator = 0.f;
-                    float mDenominator = 0.f;
-                    for (int j = 0; j < pointsCount; ++j)
-                    {
-                        var value = points[j].r.c * evalPhat(points[j].sd, points[j].mi, sg, points[i].r.Y, true);
-                        mDenominator += value;
-                        if (i == j)
-                            mNumerator += value;
-                    }
-                    float m = mDenominator == 0 ? 0 : mNumerator / mDenominator;
+                    // Only spatially reuse one channel
+                    if (gFrameCount % channels != c)
+                        continue;
 
-                    ws[i] = builder.update(points[i].r, m, phat, sg);
+                    var builder = Reservoir::Builder(channelType[c]);
+                    for (int i = 0; i < pointsCount; ++i)
+                    {
+                        float3 phat = evalF(points[0].sd, points[0].mi, sg, points[i].r[c].Y, true);
+                        float mNumerator = 0.f;
+                        float mDenominator = 0.f;
+                        for (int j = 0; j < pointsCount; ++j)
+                        {
+                            var value =
+                                points[j].r[c].c * project(channelType[c], evalF(points[j].sd, points[j].mi, sg, points[i].r[c].Y, true));
+                            mDenominator += value;
+                            if (i == j)
+                                mNumerator += value;
+                        }
+                        float m = mDenominator == 0 ? 0 : mNumerator / mDenominator;
+
+                        builder.update(points[i].r[c], m, phat, sg);
+                    }
+                    // Don't increase confidence during spatial reuse
+                    builder.c = points[0].r[c].c;
+                    points[0].r[c] = builder.build();
                 }
-                // Don't increase confidence during spatial reuse
-                builder.c = points[0].r.c;
-                points[0].r = builder.build();
-                color = LightColor::combine(color, ws[0], LightColor(evalF(points[0].sd, points[0].mi, sg, points[1].r.Y, true)), ws[1]);
-                // color = LightColor::combine(color, ws[0], LightColor(evalF(points[0].sd, points[0].mi, sg, points[1].r.Y, true)), ws[1] /
-                // max(1, points[1].r.c));
             }
             gReSTIR[toIndex(pixel, frameDim)] = points[0].r;
-            gReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir = color.color;
 
+            // Channel
+            if (gChannelReuse)
             {
-                var props = point.mi.getProperties(point.sd);
-                output.color = props.emission;
-                output.albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
-                                props.specularTransmissionAlbedo;
-            }
-            if (kSplitChannels)
-            {
-                if (gChannelReuse)
+                Reservoir::Builder builders[channels];
+                for (int b = 0; b < channels; ++b)
                 {
-                    output.color += reinterpret<LightColor>(gReSTIR[toIndex(pixel, frameDim) + frameDim.x * frameDim.y].Y.dir)
-                                       .apply(evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W);
+                    builders[b] = Reservoir::Builder(channelType[b]);
+                    for (int c = 0; c < channels; ++c)
+                    {
+                        float3 phat = points[0].r[c].phat;
+                        float projected = project(channelType[c], phat);
+#if SPLIT_CHANNELS == 1
+                        builders[b].update(
+                            points[0].r[c], projected == 0 ? 0 : projected / (phat.x + phat.y + phat.z), project(channelType[b], phat), sg
+                        );
+#else
+                        builders[b].update(points[0].r[c], 1 / 3.f, projected, sg);
+#endif
+                    }
                 }
-                else
+                for (int b = 0; b < channels; ++b)
                 {
-                    output.color += color.color;
+                    // Don't increase confidence during channel reuse
+                    builders[b].c = points[0].r[b].c;
+                    points[0].r[b] = builders[b].build();
                 }
             }
-            else
+
+            outColor = float3(0);
+            for (int c = 0; c < channels; ++c)
             {
-                output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W;
+#if SPLIT_CHANNELS == 1
+                outColor += projectVec(channelType[c], evalF(points[0].sd, points[0].mi, sg, points[0].r[c].Y, true)) * points[0].r[c].W;
+#else
+                outColor += (evalF(points[0].sd, points[0].mi, sg, points[0].r[c].Y, true) * points[0].r[c].W) / channels;
+#endif
             }
         }
 
@@ -909,14 +936,16 @@ Output tracePath(const uint2 pixel, const uint2 frameDim)
     }
     else
     {
-        gReSTIR[toIndex(pixel, frameDim)] = Reservoir();
+        for (int c = 0; c < channels; ++c)
+        {
+            gReSTIR[toIndex(pixel, frameDim)][c] = Reservoir();
+        }
         // Background pixel.
         const float3 primaryRayDir = getPrimaryRayDir(pixel, frameDim, gScene.camera);
-        output.color = kUseEnvBackground ? gScene.envMap.eval(primaryRayDir) : kDefaultBackgroundColor;
-        output.albedo = float3(1.f, 1.f, 1.f);
+        outColor = kUseEnvBackground ? gScene.envMap.eval(primaryRayDir) : kDefaultBackgroundColor;
     }
 
-    return output;
+    return outColor;
 }
 
 //
@@ -1068,8 +1097,7 @@ void rayGen()
     uint2 pixel = DispatchRaysIndex().xy;
     uint2 frameDim = DispatchRaysDimensions().xy;
 
-    Output output = tracePath(pixel, frameDim);
+    float3 color = tracePath(pixel, frameDim);
 
-    gOutputColor[pixel] = float4(output.color, 1.f);
-    gOutputAlbedo[pixel] = float4(output.albedo, 1.f);
+    gOutputColor[pixel] = float4(color, 1.f);
 }
