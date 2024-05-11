@@ -337,6 +337,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
 
 void ColorReSTIR::renderUI(Gui::Widgets& widget)
 {
+    static constexpr float intSpeed = 0.02f;
     bool dirty = false;
 
     if (definesOutdated())
@@ -357,7 +358,7 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     dirty |= widget.dropdown("Output Mode", mConfig.outputMode);
     // widget.tooltip("Mode", true);
 
-    dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16);
+    dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16, intSpeed);
     widget.tooltip("Number of candidate light samples to generate before temporal reuse.", true);
 
     dirty |= widget.checkbox("Candidate visibility", mConfig.candidatesVisibility);
@@ -366,23 +367,23 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     dirty |= widget.checkbox("Reuse candidates", mConfig.reuseCandidates);
     widget.tooltip("Reuse the candidate samples across all reservoirs in a pixel.", true);
 
-    dirty |= widget.var("Max confidence", mConfig.maxConfidence, 1u, 1u << 16);
+    dirty |= widget.var("Max confidence", mConfig.maxConfidence, 1u, 1u << 16, intSpeed);
     widget.tooltip("Clamps the confidence to this value. This controls the weight in the temporal accumulation.", true);
 
     dirty |= widget.checkbox("Temporal reuse", mConfig.temporalReuse);
     widget.tooltip("Whether or not to do temporal reuse.", true);
 
-    dirty |= widget.var("Spatial reuse", mConfig.spatialReuse, 0u, 1u << 16);
+    dirty |= widget.var("Spatial reuse", mConfig.spatialReuse, 0u, 1u << 16, intSpeed);
     widget.tooltip(
         "(Recompiles shaders). The number of neighbors to do spatial reuse from. Note that this is an upper bound, the actual number "
         "depends on how many are found.",
         true
     );
 
-    dirty |= widget.var("Max spatial search", mConfig.maxSpatialSearch, 0u, 1u << 16);
+    dirty |= widget.var("Max spatial search", mConfig.maxSpatialSearch, 0u, 1u << 16, intSpeed);
     widget.tooltip("The number of pixels we are allowed to look at when finding neighbors for spatial reuse.", true);
 
-    dirty |= widget.var("Spatial radius", mConfig.spatialRadius, 0u, 1u << 16);
+    dirty |= widget.var("Spatial radius", mConfig.spatialRadius, 0u, 1u << 16, intSpeed);
     widget.tooltip("The radius for spatial reuse measured in pixels.", true);
 
     // Minimal Path Tracer
