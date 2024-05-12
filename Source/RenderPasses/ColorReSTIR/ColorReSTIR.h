@@ -29,6 +29,7 @@
 #include "Falcor.h"
 #include "RenderGraph/RenderPass.h"
 #include "Rendering/Lights/EnvMapSampler.h"
+#include "Rendering/Lights/LightBVHSampler.h"
 #include "Utils/Sampling/SampleGenerator.h"
 
 using namespace Falcor;
@@ -90,6 +91,8 @@ private:
     ref<SampleGenerator> mSampleGenerator;
     /// Environment map sampler.
     std::unique_ptr<EnvMapSampler> mEnvMapSampler;
+    /// Emissive light sampler.
+    std::unique_ptr<EmissiveLightSampler> mEmissiveSampler;
     /// Screen space reservoirs.
     /// Ping pong buffer because of the spatial reuse.
     ref<Buffer> mReSTIRBuffers[2];

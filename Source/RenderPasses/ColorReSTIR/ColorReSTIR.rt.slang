@@ -48,6 +48,7 @@
 #include "Scene/SceneDefines.slangh"
 #include "Utils/Math/MathConstants.slangh"
 
+import Rendering.Lights.EmissiveLightSampler;
 import Rendering.Lights.EnvMapSampler;
 import Rendering.Lights.LightHelpers;
 import Scene.Raytracing;
@@ -80,6 +81,7 @@ cbuffer CB
 }
 
 uniform EnvMapSampler gEnvMapSampler;
+uniform EmissiveLightSampler gEmissiveSampler;
 
 // Inputs
 Texture2D<PackedHitInfo> gVBuffer;
@@ -97,18 +99,30 @@ RWTexture2D<float4> gOutputColor;
 RWTexture2D<float4> gOutputAlbedo;
 
 // Internals
+struct EmissiveSample
+{
+    float2 uv;
+    uint triangleIndex;
+
+    __init(float2 uv_ = float2(0, 0), uint triangleIndex_ = 0)
+    {
+        uv = uv_;
+        triangleIndex = triangleIndex_;
+    }
+}
 struct ReSTIRSample
 {
-    int type;   // 0 = null, 1 = light, 2 = dir
-    uint light; // analytical
-    float3 dir; // environment
-                // todo: emissive
+    int type;                // 0 = null, 1 = light, 2 = dir, 3 = emissive
+    uint light;              // analytical
+    float3 dir;              // environment
+    EmissiveSample emissive; // emissive
 
-    __init(int type_ = 0, uint light_ = 0, float3 dir_ = float3(0, 0, 0))
+    __init(int type_ = 0, uint light_ = 0, float3 dir_ = float3(0, 0, 0), EmissiveSample emissive_ = EmissiveSample())
     {
         type = type_;
         light = light_;
         dir = dir_;
+        emissive = emissive_;
     }
 }
 struct LightColor
@@ -336,6 +350,16 @@ float3 getForwardDirFromViewMat(float4x4 viewMat)
     return normalize(-viewMat[2].xyz);
 }
 
+uint getMaterialInstanceHints(const HitInfo hit)
+{
+    uint hints = 0;
+    if (hit.getType() == HitType::Triangle || hit.getType() == HitType::DisplacedTriangle)
+    {
+        hints |= (uint)MaterialInstanceHints::AdjustShadingNormal;
+    }
+    return hints;
+}
+
 struct ReSTIRPoint
 {
     ShadingData sd;
@@ -360,7 +384,7 @@ struct ReSTIRPoint
         sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir, lod);
 
         // Create material instance at shading point.
-        mi = gScene.materials.getMaterialInstance(sd, lod);
+        mi = gScene.materials.getMaterialInstance(sd, lod, getMaterialInstanceHints(hit));
 
         return true;
     }
@@ -410,10 +434,13 @@ struct GeometryGrads
             {
                 uint dir = i / 2;
                 uint2 neighbor = neighbors[i];
-                if (isInBounds(neighbor, frameDim) && abs(z - gLinearZ[neighbor].x) / (zGrad[dir] + 1e-2) < 2.f)
+                if (isInBounds(neighbor, frameDim))
                 {
-                    float3 otherN = gNormals[neighbor].xyz;
-                    nGrad[dir] = min(nGrad[dir], distance(normal, otherN));
+                    if (abs(z - gLinearZ[neighbor].x) / (zGrad[dir] + 1e-2) < 2.f)
+                    {
+                        float3 otherN = gNormals[neighbor].xyz;
+                        nGrad[dir] = min(nGrad[dir], distance(normal, otherN));
+                    }
                 }
             }
 
@@ -454,42 +481,80 @@ struct GeometryGrads
     }
 }
 
-void sampleAnalyticalLight(inout SampleGenerator sg, out uint lightIndex, out float invPdf)
+void sampleAnalyticalLight(inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
 {
-    // Assumes that lightCount > 0
     const uint lightCount = gScene.getLightCount();
-    // Pick one of the analytic light sources randomly with equal probability.
-    lightIndex = min(uint(sampleNext1D(sg) * lightCount), lightCount - 1);
-    invPdf = lightCount; // Light selection pdf = 1.0 / lightCount.
-}
-
-void sampleEnvMap(inout SampleGenerator sg, out float3 dir, out float invPdf)
-{
-    EnvMapSample sample;
-    gEnvMapSampler.sample(sampleNext2D(sg), sample);
-    dir = sample.dir;
-    invPdf = 1.f / sample.pdf;
-}
-
-void sampleAllLights(inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
-{
-    float prob = 0.5f;
-    const uint lightCount = gScene.getLightCount();
-    if (lightCount == 0)
-        prob = 0.f;
-
-    if (sampleNext1D(sg) < prob)
+    if (kUseAnalyticLights && lightCount > 0)
     {
         sample.type = 1;
-        sampleAnalyticalLight(sg, sample.light, invPdf);
-        invPdf /= prob;
+        // Pick one of the analytic light sources randomly with equal probability.
+        sample.light = min(uint(sampleNext1D(sg) * lightCount), lightCount - 1);
+        invPdf = lightCount; // Light selection pdf = 1.0 / lightCount.
     }
     else
     {
-        sample.type = 2;
-        sampleEnvMap(sg, sample.dir, invPdf);
-        invPdf /= (1 - prob);
+        sample = {};
+        invPdf = 1;
     }
+}
+
+void sampleEnvMap(inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
+{
+    sample = {};
+    invPdf = 1;
+    if (kUseEnvLight)
+    {
+        EnvMapSample mapSample;
+        if (gEnvMapSampler.sample(sampleNext2D(sg), mapSample))
+        {
+            if (mapSample.pdf > 0)
+            {
+                sample.type = 2;
+                sample.dir = mapSample.dir;
+                invPdf = 1.f / mapSample.pdf;
+            }
+        }
+    }
+}
+
+void sampleEmissiveLight(ShadingData sd, inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
+{
+    sample = {};
+    invPdf = 1;
+    if (kUseEmissiveLights)
+    {
+        TriangleLightSample tls;
+        if (gEmissiveSampler.sampleLight(sd.posW, sd.getOrientedFaceNormal(), false, sg, tls))
+        {
+            if (tls.pdf > 0)
+            {
+                sample.type = 3;
+                sample.emissive = EmissiveSample(tls.uv, tls.triangleIndex);
+                invPdf = 1.f / tls.pdf / max(0, dot(-tls.dir, tls.normalW)) * (tls.distance * tls.distance);
+            }
+        }
+    }
+}
+
+void sampleAllLights(ShadingData sd, inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
+{
+    switch (min(2, uint(sampleNext1D(sg) * 3)))
+    {
+    case 0:
+        sampleAnalyticalLight(sg, sample, invPdf);
+        break;
+    case 1:
+        sampleEnvMap(sg, sample, invPdf);
+        break;
+    case 2:
+        sampleEmissiveLight(sd, sg, sample, invPdf);
+        break;
+    default:
+        sample = {};
+        invPdf = 1;
+        break;
+    }
+    invPdf *= 3;
 }
 
 float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
@@ -511,6 +576,24 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
         dir = X.dir;
         Li = kUseEnvBackground ? gScene.envMap.eval(dir) : kDefaultBackgroundColor;
         distance = kRayTMax;
+    }
+    else if (X.type == 3)
+    {
+        if (X.emissive.triangleIndex >= gScene.lightCollection.getTriangleCount())
+            return float3(0.f);
+        var triangle = gScene.lightCollection.getTriangle(X.emissive.triangleIndex);
+        var barycentric = sample_triangle(X.emissive.uv);
+        var uv = triangle.getTexCoord(barycentric);
+        var initialPos = triangle.getPosition(barycentric);
+        var initialDir = normalizeSafe(initialPos - sd.posW);
+        var initialDistSqr = dot(initialPos - sd.posW, initialPos - sd.posW);
+        Li = gScene.materials.evalEmissive(triangle.materialID, uv) * max(0, dot(-initialDir, triangle.normal)) / initialDistSqr;
+
+        // Use points with offsets to avoid self intersection
+        var safePos = computeRayOrigin(initialPos, triangle.normal);
+        var origin = computeRayOrigin(sd.posW, dot(sd.faceN, safePos - sd.posW) >= 0.f ? sd.faceN : -sd.faceN);
+        dir = normalizeSafe(safePos - origin);
+        distance = length(safePos - origin);
     }
     else
     {
@@ -552,7 +635,7 @@ Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
     {
         ReSTIRSample X;
         float invPdf;
-        sampleAllLights(sg, X, invPdf);
+        sampleAllLights(point.sd, sg, X, invPdf);
         float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
         candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gCandidateCount, phat, sg);
     }
@@ -622,12 +705,15 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
             {
                 float2 offset = gSpatialRadius * (sampleNext2D(sg) * 2 - 1);
                 uint2 neighbor = pixel + int2(offset + sign(offset));
-                if (isInBounds(neighbor, frameDim) && points[pointsCount].initialize(neighbor, frameDim))
+                if (isInBounds(neighbor, frameDim))
                 {
-                    if (grads.allowSpatialReuse(pixel, neighbor, z, normal))
+                    if (points[pointsCount].initialize(neighbor, frameDim))
                     {
-                        points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)].r;
-                        ++pointsCount;
+                        if (grads.allowSpatialReuse(pixel, neighbor, z, normal))
+                        {
+                            points[pointsCount].r = gPrevReSTIR[toIndex(neighbor, frameDim)].r;
+                            ++pointsCount;
+                        }
                     }
                 }
             }

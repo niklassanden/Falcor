@@ -93,12 +93,17 @@ const char kMaxBounces[] = "maxBounces";
 const char kComputeDirect[] = "computeDirect";
 const char kUseImportanceSampling[] = "useImportanceSampling";
 
+struct EmissiveSample
+{
+    float2 uv{0, 0};
+    uint triangleIndex{0};
+};
 struct ReSTIRSample
 {
     int type{0};
-    uint light{0};       // analytical
-    float3 dir{0, 0, 0}; // environment
-                         // todo: emissive
+    uint light{0};             // analytical
+    float3 dir{0, 0, 0};       // environment
+    EmissiveSample emissive{}; // emissive
 };
 struct LightColor
 {
@@ -267,6 +272,23 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     mTracer.program->addDefines(getValidResourceDefines(kInputChannels, renderData));
     mTracer.program->addDefines(getValidResourceDefines(kOutputChannels, renderData));
 
+    if (mScene->useEnvLight())
+    {
+        if (!mEnvMapSampler || mEnvMapSampler->getEnvMap() != mScene->getEnvMap())
+        {
+            mEnvMapSampler = std::make_unique<EnvMapSampler>(mpDevice, mScene->getEnvMap());
+        }
+    }
+    if (mScene->useEmissiveLights())
+    {
+        if (!mEmissiveSampler)
+        {
+            mEmissiveSampler = std::make_unique<LightBVHSampler>(pRenderContext, mScene);
+        }
+        mEmissiveSampler->update(pRenderContext);
+        mTracer.program->addDefines(mEmissiveSampler->getDefines());
+    }
+
     // Prepare program vars. This may trigger shader compilation.
     // The program should have all necessary defines set at this point.
     if (!mTracer.vars)
@@ -285,13 +307,13 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     var["CB"][kSpatialRadius] = mConfig.spatialRadius;
 
-    if (mScene->useEnvLight())
+    if (mScene->useEnvLight() && mEnvMapSampler)
     {
-        if (!mEnvMapSampler || mEnvMapSampler->getEnvMap() != mScene->getEnvMap())
-        {
-            mEnvMapSampler = std::make_unique<EnvMapSampler>(mpDevice, mScene->getEnvMap());
-            mEnvMapSampler->bindShaderData(var["gEnvMapSampler"]);
-        }
+        mEnvMapSampler->bindShaderData(var["gEnvMapSampler"]);
+    }
+    if (mScene->useEmissiveLights() && mEmissiveSampler)
+    {
+        mEmissiveSampler->bindShaderData(var["gEmissiveSampler"]);
     }
 
     // Bind I/O buffers. These needs to be done per-frame as the buffers may change anytime.
@@ -351,7 +373,6 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     }
 
     dirty |= widget.dropdown("Output Mode", mConfig.outputMode);
-    // widget.tooltip("Mode", true);
 
     dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16, intSpeed);
     widget.tooltip("Number of candidate light samples to generate before temporal reuse.", true);
@@ -407,6 +428,7 @@ void ColorReSTIR::setScene(RenderContext* pRenderContext, const ref<Scene>& pSce
     mTracer.bindingTable = nullptr;
     mTracer.vars = nullptr;
     mEnvMapSampler = nullptr;
+    mEmissiveSampler = nullptr;
     mFrameCount = 0;
 
     // Set new scene.
