@@ -128,13 +128,17 @@ struct ReSTIRSample
         emissive = emissive_;
     }
 }
+float sumColor(float3 color)
+{
+    return color.r + color.g + color.b;
+}
 struct LightColor
 {
     float3 color;
 
     __init(float3 light = float3(0.f))
     {
-        float denom = light.r + light.g + light.b;
+        float denom = sumColor(light);
         color = denom == 0 ? light : light / denom;
     }
 
@@ -605,8 +609,7 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
 }
 float evalPhat(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
 {
-    float3 value = evalF(sd, mi, sg, X, checkVisibility);
-    return value.r + value.g + value.b;
+    return sumColor(evalF(sd, mi, sg, X, checkVisibility));
 }
 
 Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
