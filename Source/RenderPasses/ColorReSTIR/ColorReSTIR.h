@@ -102,7 +102,10 @@ private:
     struct
     {
         OutputMode outputMode = OutputMode::Combined;
-        uint candidateCount = 5;
+        uint analyticalSamples = 4;
+        uint environmentSamples = 4;
+        uint emissiveSamples = 4;
+        uint bsdfSamples = 1;
         bool candidatesVisibility = false;
         uint maxConfidence = 20;
         bool temporalReuse = true;

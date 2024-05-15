@@ -72,7 +72,10 @@ cbuffer CB
 
     uint gIteration; // ReSTIR iteration
     OutputMode gOutputMode;
-    uint gCandidateCount;
+    uint gAnalyticalSamples;
+    uint gEnvironmentSamples;
+    uint gEmissiveSamples;
+    uint gBsdfSamples;
     bool gCandidatesVisibility;
     uint gMaxConfidence;
     bool gTemporalReuse;
@@ -536,27 +539,6 @@ void sampleEmissiveLight(ShadingData sd, inout SampleGenerator sg, out ReSTIRSam
     }
 }
 
-void sampleAllLights(ShadingData sd, inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
-{
-    switch (min(2, uint(sampleNext1D(sg) * 3)))
-    {
-    case 0:
-        sampleAnalyticalLight(sg, sample, invPdf);
-        break;
-    case 1:
-        sampleEnvMap(sg, sample, invPdf);
-        break;
-    case 2:
-        sampleEmissiveLight(sd, sg, sample, invPdf);
-        break;
-    default:
-        sample = {};
-        invPdf = 1;
-        break;
-    }
-    invPdf *= 3;
-}
-
 float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
 {
     float3 dir;
@@ -631,15 +613,31 @@ Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
 {
     // Generate the canonical ReSTIR samples
     var candidateBuilder = Reservoir::Builder();
-    for (int i = 0; i < gCandidateCount; ++i)
     {
         ReSTIRSample X;
         float invPdf;
-        sampleAllLights(point.sd, sg, X, invPdf);
-        float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
-        candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gCandidateCount, phat, sg);
+        for (int i = 0; i < gAnalyticalSamples; ++i)
+        {
+            sampleAnalyticalLight(sg, X, invPdf);
+            float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
+            candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gAnalyticalSamples, phat, sg);
+        }
+        for (int i = 0; i < gEnvironmentSamples; ++i)
+        {
+            sampleEnvMap(sg, X, invPdf);
+            float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
+            candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gEnvironmentSamples, phat, sg);
+        }
+        for (int i = 0; i < gEmissiveSamples; ++i)
+        {
+            sampleEmissiveLight(point.sd, sg, X, invPdf);
+            float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
+            candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gEmissiveSamples, phat, sg);
+        }
     }
     Reservoir candidate = candidateBuilder.build();
+    // TODO: Add bsdf samples
+
     // Normalize confidence scale so that 1 is one frame of candidates
     candidate.c = 1;
     return candidate;

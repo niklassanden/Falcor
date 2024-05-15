@@ -80,7 +80,10 @@ const char kReSTIR[] = "gReSTIR";
 const char kPrevReSTIR[] = "gPrevReSTIR";
 
 const char kOutputMode[] = "gOutputMode";
-const char kCandidateCount[] = "gCandidateCount";
+const char kAnalyticalSamples[] = "gAnalyticalSamples";
+const char kEnvironmentSamples[] = "gEnvironmentSamples";
+const char kEmissiveSamples[] = "gEmissiveSamples";
+const char kBsdfSamples[] = "gBsdfSamples";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
 const char kMaxConfidence[] = "gMaxConfidence";
 const char kTemporalReuse[] = "gTemporalReuse";
@@ -137,8 +140,14 @@ void ColorReSTIR::parseProperties(const Properties& props)
     {
         if (key == kOutputMode)
             mConfig.outputMode = value;
-        else if (key == kCandidateCount)
-            mConfig.candidateCount = value;
+        else if (key == kAnalyticalSamples)
+            mConfig.analyticalSamples = value;
+        else if (key == kEnvironmentSamples)
+            mConfig.environmentSamples = value;
+        else if (key == kEmissiveSamples)
+            mConfig.emissiveSamples = value;
+        else if (key == kBsdfSamples)
+            mConfig.bsdfSamples = value;
         else if (key == kCandidatesVisibility)
             mConfig.candidatesVisibility = value;
         else if (key == kMaxConfidence)
@@ -170,7 +179,10 @@ Properties ColorReSTIR::getProperties() const
 {
     Properties props;
     props[kOutputMode] = mConfig.outputMode;
-    props[kCandidateCount] = mConfig.candidateCount;
+    props[kAnalyticalSamples] = mConfig.analyticalSamples;
+    props[kEnvironmentSamples] = mConfig.environmentSamples;
+    props[kEmissiveSamples] = mConfig.emissiveSamples;
+    props[kBsdfSamples] = mConfig.bsdfSamples;
     props[kCandidatesVisibility] = mConfig.candidatesVisibility;
     props[kMaxConfidence] = mConfig.maxConfidence;
     props[kTemporalReuse] = mConfig.temporalReuse;
@@ -300,7 +312,10 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
     var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
-    var["CB"][kCandidateCount] = mConfig.candidateCount;
+    var["CB"][kAnalyticalSamples] = mConfig.analyticalSamples;
+    var["CB"][kEnvironmentSamples] = mConfig.environmentSamples;
+    var["CB"][kEmissiveSamples] = mConfig.emissiveSamples;
+    var["CB"][kBsdfSamples] = mConfig.bsdfSamples;
     var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
     var["CB"][kMaxConfidence] = mConfig.maxConfidence;
     var["CB"][kTemporalReuse] = mConfig.temporalReuse;
@@ -374,8 +389,21 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 
     dirty |= widget.dropdown("Output Mode", mConfig.outputMode);
 
-    dirty |= widget.var("Candidate count", mConfig.candidateCount, 0u, 1u << 16, intSpeed);
-    widget.tooltip("Number of candidate light samples to generate before temporal reuse.", true);
+    {
+        auto group = widget.group("Candidate sample counts", false);
+
+        dirty |= group.var("Analytical", mConfig.analyticalSamples, 0u, 1u << 16, intSpeed);
+        group.tooltip("Number of analytical light samples to generate.", true);
+
+        dirty |= group.var("Environment", mConfig.environmentSamples, 0u, 1u << 16, intSpeed);
+        group.tooltip("Number of environment map samples to generate.", true);
+
+        dirty |= group.var("Emissive", mConfig.emissiveSamples, 0u, 1u << 16, intSpeed);
+        group.tooltip("Number of emissive light samples to generate.", true);
+
+        dirty |= group.var("BSDF", mConfig.bsdfSamples, 0u, 1u << 16, intSpeed);
+        group.tooltip("(WARNING: One extra ray is cast for each BSDF sample)\nNumber of BSDF samples to generate.", true);
+    }
 
     dirty |= widget.checkbox("Candidate visibility", mConfig.candidatesVisibility);
     widget.tooltip("If enabled, each candidate sample will shoot shadow rays to compute visibility.", true);
