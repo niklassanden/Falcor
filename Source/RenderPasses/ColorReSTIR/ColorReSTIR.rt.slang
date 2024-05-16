@@ -106,11 +106,15 @@ struct EmissiveSample
 {
     float2 barycentric;
     uint triangleIndex;
+    float distSqr;
+    float cosine; // dot product between normal of the triangle and the -light direction
 
-    __init(float2 barycentric_ = float2(0, 0), uint triangleIndex_ = 0)
+    __init(float2 barycentric_ = float2(0, 0), uint triangleIndex_ = 0, float distSqr_ = 0.f, float cosine_ = 0.f)
     {
         barycentric = barycentric_;
         triangleIndex = triangleIndex_;
+        distSqr = distSqr_;
+        cosine = cosine_;
     }
 
     float3 getFullBarycentric() { return float3(1 - barycentric.x - barycentric.y, barycentric); }
@@ -574,8 +578,10 @@ void sampleEmissiveLight(ShadingData sd, inout SampleGenerator sg, out ReSTIRSam
             if (tls.pdf > 0)
             {
                 sample.type = 3;
-                sample.emissive = EmissiveSample(sample_triangle(tls.uv).yz, tls.triangleIndex);
-                invPdf = 1.f / tls.pdf / max(0, dot(-tls.dir, tls.normalW)) * (tls.distance * tls.distance);
+                sample.emissive = EmissiveSample(
+                    sample_triangle(tls.uv).yz, tls.triangleIndex, tls.distance * tls.distance, max(0, dot(-tls.dir, tls.normalW))
+                );
+                invPdf = 1.f / tls.pdf;
             }
         }
     }
@@ -624,8 +630,30 @@ void sampleBsdf(const ShadingData sd, const IMaterialInstance mi, inout SampleGe
     }
 }
 
-float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
+struct Phat
 {
+    float3 full;
+    float phat;
+    float jacobian;
+
+    __init()
+    {
+        full = float3(0);
+        phat = 0;
+        jacobian = 1;
+    }
+}
+Phat evalF(
+    const ShadingData sd,
+    const IMaterialInstance mi,
+    inout SampleGenerator sg,
+    inout ReSTIRSample X,
+    const bool checkVisibility,
+    bool updateX = false
+)
+{
+    Phat phat = Phat();
+
     float3 dir;
     float3 Li;
     float distance;
@@ -633,7 +661,7 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
     {
         AnalyticLightSample ls;
         if (!sampleLight(sd.posW, gScene.getLight(X.light), sg, ls))
-            return float3(0.f);
+            return phat;
         dir = ls.dir;
         Li = ls.Li;
         distance = ls.distance;
@@ -641,20 +669,29 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
     else if (X.type == 2)
     {
         dir = X.dir;
-        Li = kUseEnvBackground ? gScene.envMap.eval(dir) : kDefaultBackgroundColor;
+        Li = gEnvMapSampler.eval(dir);
         distance = kRayTMax;
     }
     else if (X.type == 3)
     {
         if (X.emissive.triangleIndex >= gScene.lightCollection.getTriangleCount())
-            return float3(0.f);
+            return phat;
         var triangle = gScene.lightCollection.getTriangle(X.emissive.triangleIndex);
         var barycentric = X.emissive.getFullBarycentric();
         var uv = triangle.getTexCoord(barycentric);
         var initialPos = triangle.getPosition(barycentric);
-        var initialDir = normalizeSafe(initialPos - sd.posW);
-        var initialDistSqr = dot(initialPos - sd.posW, initialPos - sd.posW);
-        Li = gScene.materials.evalEmissive(triangle.materialID, uv) * max(0, dot(-initialDir, triangle.normal)) / initialDistSqr;
+        {
+            float distSqr = dot(initialPos - sd.posW, initialPos - sd.posW);
+            float cosine = max(0, dot(-normalizeSafe(initialPos - sd.posW), triangle.normal));
+            float denom = (X.emissive.cosine * distSqr);
+            phat.jacobian = denom == 0 ? 0 : (cosine * X.emissive.distSqr) / denom;
+            if (updateX)
+            {
+                X.emissive.distSqr = distSqr;
+                X.emissive.cosine = cosine;
+            }
+        }
+        Li = gScene.materials.evalEmissive(triangle.materialID, uv);
 
         // Use points with offsets to avoid self intersection
         var safePos = computeRayOrigin(initialPos, triangle.normal);
@@ -664,7 +701,7 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
     }
     else
     {
-        return float3(0.f);
+        return phat;
     }
 
     // Reject sample if not in the hemisphere of a BSDF lobe.
@@ -673,7 +710,7 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
     const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
     float NdotL = dot(sd.getOrientedFaceNormal(), dir);
     if ((NdotL <= kMinCosTheta && !hasTransmission) || (NdotL >= -kMinCosTheta && !hasReflection))
-        return float3(0.f);
+        return phat;
 
     if (checkVisibility)
     {
@@ -682,15 +719,13 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
 
         // Test visibility by tracing a shadow ray.
         if (!traceShadowRay(origin, dir, distance))
-            return float3(0.f);
+            return phat;
     }
 
     // Evaluate contribution.
-    return mi.eval(sd, dir, sg) * Li;
-}
-float evalPhat(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
-{
-    return sumColor(evalF(sd, mi, sg, X, checkVisibility));
+    phat.full = mi.eval(sd, dir, sg) * Li;
+    phat.phat = sumColor(phat.full);
+    return phat;
 }
 
 Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
@@ -704,19 +739,19 @@ Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
         for (int i = 0; i < gAnalyticalSamples; ++i)
         {
             sampleAnalyticalLight(sg, X, invPdf);
-            float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
+            float phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility).phat;
             candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gAnalyticalSamples, phat, sg);
         }
         for (int i = 0; i < gEnvironmentSamples; ++i)
         {
             sampleEnvMap(sg, X, invPdf);
-            float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
+            float phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility).phat;
             candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gEnvironmentSamples, phat, sg);
         }
         for (int i = 0; i < gEmissiveSamples; ++i)
         {
             sampleEmissiveLight(point.sd, sg, X, invPdf);
-            float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
+            float phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility).phat;
             candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gEmissiveSamples, phat, sg);
         }
 
@@ -771,8 +806,8 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
         {
             Reservoir candidate = getCandidate(point, sg);
             // Add visibility term if we don't already have it
-            float phatCandidate = gCandidatesVisibility ? candidate.phat : evalPhat(point.sd, point.mi, sg, candidate.Y, true);
-            LightColor candidateColor = LightColor(evalF(point.sd, point.mi, sg, candidate.Y, true));
+            float phatCandidate = gCandidatesVisibility ? candidate.phat : evalF(point.sd, point.mi, sg, candidate.Y, true).phat;
+            LightColor candidateColor = LightColor(evalF(point.sd, point.mi, sg, candidate.Y, true).full);
 
             uint2 oldPixel = reproject(pixel, frameDim);
             Temporal old = Temporal();
@@ -781,10 +816,10 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
                 old = gPrevReSTIR[toIndex(oldPixel, frameDim)];
             }
 
-            float phatOld = evalPhat(point.sd, point.mi, sg, old.r.Y, true);
+            Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, true, true);
             var builder = Reservoir::Builder();
             float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.r.c), phatCandidate, sg);
-            float wo = builder.update(old.r, (float)old.r.c / (candidate.c + old.r.c), phatOld, sg);
+            float wo = builder.update(old.r, phatOld.jacobian * (float)old.r.c / (candidate.c + old.r.c), phatOld.phat, sg);
             point.r = builder.build();
             gReSTIR[toIndex(pixel, frameDim)] = Temporal(point.r, LightColor::combine(candidateColor, wc, old.c, wo));
         }
@@ -818,26 +853,28 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
                 float ws[2];
                 for (int i = 0; i < pointsCount; ++i)
                 {
-                    float phat = evalPhat(points[0].sd, points[0].mi, sg, points[i].r.Y, true);
+                    Phat phat = evalF(points[0].sd, points[0].mi, sg, points[i].r.Y, true, true);
                     float mNumerator = 0.f;
                     float mDenominator = 0.f;
                     for (int j = 0; j < pointsCount; ++j)
                     {
-                        var value = points[j].r.c * evalPhat(points[j].sd, points[j].mi, sg, points[i].r.Y, true);
+                        Phat otherPhat = evalF(points[j].sd, points[j].mi, sg, points[i].r.Y, true);
+                        var value = points[j].r.c * otherPhat.phat * otherPhat.jacobian;
                         mDenominator += value;
                         if (i == j)
                             mNumerator += value;
                     }
                     float m = mDenominator == 0 ? 0 : mNumerator / mDenominator;
 
-                    ws[i] = builder.update(points[i].r, m, phat, sg);
+                    ws[i] = builder.update(points[i].r, phat.jacobian * m, phat.phat, sg);
                 }
                 // Don't increase confidence during spatial reuse
                 builder.c = points[0].r.c;
                 points[0].r = builder.build();
-                color = LightColor::combine(color, ws[0], LightColor(evalF(points[0].sd, points[0].mi, sg, points[1].r.Y, true)), ws[1]);
-                // color = LightColor::combine(color, ws[0], LightColor(evalF(points[0].sd, points[0].mi, sg, points[1].r.Y, true)), ws[1] /
-                // max(1, points[1].r.c));
+                color =
+                    LightColor::combine(color, ws[0], LightColor(evalF(points[0].sd, points[0].mi, sg, points[1].r.Y, true).full), ws[1]);
+                // color = LightColor::combine(color, ws[0], LightColor(evalF(points[0].sd, points[0].mi, sg, points[1].r.Y, true).full),
+                // ws[1] / max(1, points[1].r.c));
             }
             gReSTIR[toIndex(pixel, frameDim)] = Temporal(points[0].r, color);
 
@@ -850,16 +887,16 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
             switch (gOutputMode)
             {
             case OutputMode::Default:
-                output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W;
+                output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).full * points[0].r.W;
                 break;
             case OutputMode::ColorDistribution:
                 output.color = color.color;
                 break;
             case OutputMode::Luminance:
-                output.color = evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W;
+                output.color = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W;
                 break;
             case OutputMode::Combined:
-                output.color += color.apply(evalPhat(points[0].sd, points[0].mi, sg, points[0].r.Y, true) * points[0].r.W);
+                output.color += color.apply(evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W);
                 break;
             default:
                 output.color = float3(0.f);
