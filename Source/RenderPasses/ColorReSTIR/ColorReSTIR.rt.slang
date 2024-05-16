@@ -104,14 +104,16 @@ RWTexture2D<float4> gOutputAlbedo;
 // Internals
 struct EmissiveSample
 {
-    float2 uv;
+    float2 barycentric;
     uint triangleIndex;
 
-    __init(float2 uv_ = float2(0, 0), uint triangleIndex_ = 0)
+    __init(float2 barycentric_ = float2(0, 0), uint triangleIndex_ = 0)
     {
-        uv = uv_;
+        barycentric = barycentric_;
         triangleIndex = triangleIndex_;
     }
+
+    float3 getFullBarycentric() { return float3(1 - barycentric.x - barycentric.y, barycentric); }
 }
 struct ReSTIRSample
 {
@@ -572,7 +574,7 @@ void sampleEmissiveLight(ShadingData sd, inout SampleGenerator sg, out ReSTIRSam
             if (tls.pdf > 0)
             {
                 sample.type = 3;
-                sample.emissive = EmissiveSample(tls.uv, tls.triangleIndex);
+                sample.emissive = EmissiveSample(sample_triangle(tls.uv).yz, tls.triangleIndex);
                 invPdf = 1.f / tls.pdf / max(0, dot(-tls.dir, tls.normalW)) * (tls.distance * tls.distance);
             }
         }
@@ -604,7 +606,7 @@ float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGener
         if (X.emissive.triangleIndex >= gScene.lightCollection.getTriangleCount())
             return float3(0.f);
         var triangle = gScene.lightCollection.getTriangle(X.emissive.triangleIndex);
-        var barycentric = sample_triangle(X.emissive.uv);
+        var barycentric = X.emissive.getFullBarycentric();
         var uv = triangle.getTexCoord(barycentric);
         var initialPos = triangle.getPosition(barycentric);
         var initialDir = normalizeSafe(initialPos - sd.posW);
