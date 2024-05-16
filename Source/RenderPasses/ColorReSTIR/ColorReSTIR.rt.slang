@@ -121,7 +121,7 @@ struct EmissiveSample
 }
 struct ReSTIRSample
 {
-    int type;                // 0 = null, 1 = light, 2 = dir, 3 = emissive
+    int type;                // 0 = null, 1 = light, 2 = dir, 3 = emissive, 4 = half vector
     uint light;              // analytical
     float3 dir;              // environment
     EmissiveSample emissive; // emissive
@@ -595,38 +595,9 @@ void sampleBsdf(const ShadingData sd, const IMaterialInstance mi, inout SampleGe
     BSDFSample bsdfSample;
     if (mi.sample(sd, sg, bsdfSample, kUseImportanceSampling))
     {
-        ScatterRayData rayData = ScatterRayData();
-        rayData.origin = sd.computeRayOrigin(!bsdfSample.isLobe(LobeType::Transmission));
-        rayData.direction = bsdfSample.wo;
-        traceScatterRay(rayData);
-
-        HitInfo hit = HitInfo(rayData.hit);
-        if (hit.isValid())
-        {
-            if (hit.getType() == HitType::Triangle)
-            {
-                TriangleHit triangleHit = hit.getTriangleHit();
-                uint index = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
-                if (index != gScene.lightCollection.kInvalidIndex)
-                {
-                    sample.type = 3;
-                    sample.emissive = EmissiveSample(triangleHit.barycentrics, index);
-
-                    let lod = ExplicitLodTextureSampler(0.f);
-                    VertexData v = gScene.getVertexData(triangleHit);
-                    uint materialID = gScene.getMaterialID(triangleHit.instanceID);
-                    ShadingData hitSD = gScene.materials.prepareShadingData(v, materialID, -rayData.direction, lod);
-                    float attenuation = dot(hitSD.posW - sd.posW, hitSD.posW - sd.posW);
-                    invPdf = 1.f / bsdfSample.pdf / max(0, dot(-rayData.direction, hitSD.getOrientedFaceNormal())) * attenuation;
-                }
-            }
-        }
-        else
-        {
-            sample.type = 2;
-            sample.dir = rayData.direction;
-            invPdf = 1.f / bsdfSample.pdf;
-        }
+        sample.type = 4;
+        sample.dir = sd.frame.toLocal(normalizeSafe(sd.V + bsdfSample.wo));
+        invPdf = 1.f / bsdfSample.pdf;
     }
 }
 
@@ -648,7 +619,7 @@ Phat evalF(
     const IMaterialInstance mi,
     inout SampleGenerator sg,
     inout ReSTIRSample X,
-    const bool checkVisibility,
+    bool checkVisibility,
     bool updateX = false
 )
 {
@@ -698,6 +669,51 @@ Phat evalF(
         var origin = computeRayOrigin(sd.posW, dot(sd.faceN, safePos - sd.posW) >= 0.f ? sd.faceN : -sd.faceN);
         dir = normalizeSafe(safePos - origin);
         distance = length(safePos - origin);
+    }
+    else if (X.type == 4)
+    {
+        checkVisibility = false;
+
+        float3 halfVector = sd.frame.fromLocal(X.dir);
+        ScatterRayData rayData = ScatterRayData();
+        rayData.direction = reflect(-sd.V, halfVector);
+        rayData.origin = sd.computeRayOrigin(dot(rayData.direction, sd.getOrientedFaceNormal()) >= 0);
+        traceScatterRay(rayData);
+
+        HitInfo hit = HitInfo(rayData.hit);
+        if (hit.isValid())
+        {
+            bool shadowed = true;
+            if (hit.getType() == HitType::Triangle)
+            {
+                TriangleHit triangleHit = hit.getTriangleHit();
+                uint index = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
+                if (index != gScene.lightCollection.kInvalidIndex)
+                {
+                    shadowed = false;
+
+                    let lod = ExplicitLodTextureSampler(0.f);
+                    VertexData v = gScene.getVertexData(triangleHit);
+                    uint materialID = gScene.getMaterialID(triangleHit.instanceID);
+                    ShadingData hitSD = gScene.materials.prepareShadingData(v, materialID, -rayData.direction, lod);
+                    float distanceSqr = dot(hitSD.posW - sd.posW, hitSD.posW - sd.posW);
+
+                    dir = rayData.direction;
+                    Li = gScene.materials.evalEmissive(materialID, v.texC);
+                    distance = sqrt(distanceSqr);
+                }
+            }
+            if (shadowed)
+            {
+                return phat;
+            }
+        }
+        else
+        {
+            dir = rayData.direction;
+            Li = gEnvMapSampler.eval(dir);
+            distance = kRayTMax;
+        }
     }
     else
     {
@@ -756,18 +772,6 @@ Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
         }
 
         candidate = candidateBuilder.build();
-        /*
-        candidate.c = 1;
-        float phat = gCandidatesVisibility ? candidate.phat : evalPhat(point.sd, point.mi, sg, candidate.Y, true);
-
-        // Add BSDF sample
-        candidateBuilder = Reservoir::Builder();
-        sampleBsdf(point.sd, point.mi, sg, X, invPdf);
-        candidateBuilder.update(candidate, 1 / 2.f, phat, sg);
-        float phatBsdf = evalPhat(point.sd, point.mi, sg, X, false);
-        candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1 / 2.f, phatBsdf, sg);
-        candidate = candidateBuilder.build();
-        */
     }
 
     // Normalize confidence scale so that 1 is one frame of candidates
