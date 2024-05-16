@@ -581,6 +581,49 @@ void sampleEmissiveLight(ShadingData sd, inout SampleGenerator sg, out ReSTIRSam
     }
 }
 
+void sampleBsdf(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
+{
+    sample = {};
+    invPdf = 1;
+
+    BSDFSample bsdfSample;
+    if (mi.sample(sd, sg, bsdfSample, kUseImportanceSampling))
+    {
+        ScatterRayData rayData = ScatterRayData();
+        rayData.origin = sd.computeRayOrigin(!bsdfSample.isLobe(LobeType::Transmission));
+        rayData.direction = bsdfSample.wo;
+        traceScatterRay(rayData);
+
+        HitInfo hit = HitInfo(rayData.hit);
+        if (hit.isValid())
+        {
+            if (hit.getType() == HitType::Triangle)
+            {
+                TriangleHit triangleHit = hit.getTriangleHit();
+                uint index = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
+                if (index != gScene.lightCollection.kInvalidIndex)
+                {
+                    sample.type = 3;
+                    sample.emissive = EmissiveSample(triangleHit.barycentrics, index);
+
+                    let lod = ExplicitLodTextureSampler(0.f);
+                    VertexData v = gScene.getVertexData(triangleHit);
+                    uint materialID = gScene.getMaterialID(triangleHit.instanceID);
+                    ShadingData hitSD = gScene.materials.prepareShadingData(v, materialID, -rayData.direction, lod);
+                    float attenuation = dot(hitSD.posW - sd.posW, hitSD.posW - sd.posW);
+                    invPdf = 1.f / bsdfSample.pdf / max(0, dot(-rayData.direction, hitSD.getOrientedFaceNormal())) * attenuation;
+                }
+            }
+        }
+        else
+        {
+            sample.type = 2;
+            sample.dir = rayData.direction;
+            invPdf = 1.f / bsdfSample.pdf;
+        }
+    }
+}
+
 float3 evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, ReSTIRSample X, const bool checkVisibility)
 {
     float3 dir;
@@ -654,6 +697,7 @@ Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
 {
     // Generate the canonical ReSTIR samples
     var candidateBuilder = Reservoir::Builder();
+    Reservoir candidate = Reservoir();
     {
         ReSTIRSample X;
         float invPdf;
@@ -675,9 +719,21 @@ Reservoir getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
             float phat = evalPhat(point.sd, point.mi, sg, X, gCandidatesVisibility);
             candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1.0f / gEmissiveSamples, phat, sg);
         }
+
+        candidate = candidateBuilder.build();
+        /*
+        candidate.c = 1;
+        float phat = gCandidatesVisibility ? candidate.phat : evalPhat(point.sd, point.mi, sg, candidate.Y, true);
+
+        // Add BSDF sample
+        candidateBuilder = Reservoir::Builder();
+        sampleBsdf(point.sd, point.mi, sg, X, invPdf);
+        candidateBuilder.update(candidate, 1 / 2.f, phat, sg);
+        float phatBsdf = evalPhat(point.sd, point.mi, sg, X, false);
+        candidateBuilder.update(Reservoir(X, invPdf, 1, phat), 1 / 2.f, phatBsdf, sg);
+        candidate = candidateBuilder.build();
+        */
     }
-    Reservoir candidate = candidateBuilder.build();
-    // TODO: Add bsdf samples
 
     // Normalize confidence scale so that 1 is one frame of candidates
     candidate.c = 1;
