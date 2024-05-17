@@ -105,7 +105,7 @@ private:
         uint analyticalSamples = 4;
         uint environmentSamples = 4;
         uint emissiveSamples = 4;
-        uint bsdfSamples = 1;
+        uint deltaSamples = 1;
         bool candidatesVisibility = false;
         uint maxConfidence = 20;
         bool temporalReuse = true;

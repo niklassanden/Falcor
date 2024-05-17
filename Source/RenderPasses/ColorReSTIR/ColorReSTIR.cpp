@@ -83,7 +83,7 @@ const char kOutputMode[] = "gOutputMode";
 const char kAnalyticalSamples[] = "gAnalyticalSamples";
 const char kEnvironmentSamples[] = "gEnvironmentSamples";
 const char kEmissiveSamples[] = "gEmissiveSamples";
-const char kBsdfSamples[] = "gBsdfSamples";
+const char kDeltaSamples[] = "gDeltaSamples";
 const char kCandidatesVisibility[] = "gCandidatesVisibility";
 const char kMaxConfidence[] = "gMaxConfidence";
 const char kTemporalReuse[] = "gTemporalReuse";
@@ -148,8 +148,8 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mConfig.environmentSamples = value;
         else if (key == kEmissiveSamples)
             mConfig.emissiveSamples = value;
-        else if (key == kBsdfSamples)
-            mConfig.bsdfSamples = value;
+        else if (key == kDeltaSamples)
+            mConfig.deltaSamples = value;
         else if (key == kCandidatesVisibility)
             mConfig.candidatesVisibility = value;
         else if (key == kMaxConfidence)
@@ -184,7 +184,7 @@ Properties ColorReSTIR::getProperties() const
     props[kAnalyticalSamples] = mConfig.analyticalSamples;
     props[kEnvironmentSamples] = mConfig.environmentSamples;
     props[kEmissiveSamples] = mConfig.emissiveSamples;
-    props[kBsdfSamples] = mConfig.bsdfSamples;
+    props[kDeltaSamples] = mConfig.deltaSamples;
     props[kCandidatesVisibility] = mConfig.candidatesVisibility;
     props[kMaxConfidence] = mConfig.maxConfidence;
     props[kTemporalReuse] = mConfig.temporalReuse;
@@ -317,7 +317,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"][kAnalyticalSamples] = mConfig.analyticalSamples;
     var["CB"][kEnvironmentSamples] = mConfig.environmentSamples;
     var["CB"][kEmissiveSamples] = mConfig.emissiveSamples;
-    var["CB"][kBsdfSamples] = mConfig.bsdfSamples;
+    var["CB"][kDeltaSamples] = mConfig.deltaSamples;
     var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
     var["CB"][kMaxConfidence] = mConfig.maxConfidence;
     var["CB"][kTemporalReuse] = mConfig.temporalReuse;
@@ -403,8 +403,12 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
         dirty |= group.var("Emissive", mConfig.emissiveSamples, 0u, 1u << 16, intSpeed);
         group.tooltip("Number of emissive light samples to generate.", true);
 
-        dirty |= group.var("BSDF", mConfig.bsdfSamples, 0u, 1u << 16, intSpeed);
-        group.tooltip("(WARNING: One extra ray is cast for each BSDF sample)\nNumber of BSDF samples to generate.", true);
+        dirty |= group.var("Delta", mConfig.deltaSamples, 0u, 1u << 16, intSpeed);
+        group.tooltip(
+            "Number of samples of delta lobes. These are not reused, but estimated separately and combined with ReSTIR. One ray is cast "
+            "per sample.",
+            true
+        );
     }
 
     dirty |= widget.checkbox("Candidate visibility", mConfig.candidatesVisibility);

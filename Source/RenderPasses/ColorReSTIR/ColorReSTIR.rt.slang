@@ -75,7 +75,7 @@ cbuffer CB
     uint gAnalyticalSamples;
     uint gEnvironmentSamples;
     uint gEmissiveSamples;
-    uint gBsdfSamples;
+    uint gDeltaSamples;
     bool gCandidatesVisibility;
     uint gMaxConfidence;
     bool gTemporalReuse;
@@ -593,6 +593,43 @@ void sampleEmissiveLight(ShadingData sd, inout SampleGenerator sg, out ReSTIRSam
     }
 }
 
+float3 evalDelta(ShadingData sd, IMaterialInstance mi, inout SampleGenerator sg)
+{
+    sd.mtl.setActiveLobes((uint)LobeType::Delta);
+
+    BSDFSample bsdfSample;
+    if (mi.sample(sd, sg, bsdfSample, kUseImportanceSampling))
+    {
+        ScatterRayData rayData = ScatterRayData();
+        rayData.direction = bsdfSample.wo;
+        rayData.origin = sd.computeRayOrigin(!bsdfSample.isLobe(LobeType::Transmission));
+        traceScatterRay(rayData);
+
+        HitInfo hit = HitInfo(rayData.hit);
+        if (hit.isValid())
+        {
+            if (hit.getType() == HitType::Triangle)
+            {
+                TriangleHit triangleHit = hit.getTriangleHit();
+                uint index = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
+                if (index != gScene.lightCollection.kInvalidIndex)
+                {
+                    let lod = ExplicitLodTextureSampler(0.f);
+                    VertexData v = gScene.getVertexData(triangleHit);
+                    uint materialID = gScene.getMaterialID(triangleHit.instanceID);
+
+                    return bsdfSample.weight * gScene.materials.evalEmissive(materialID, v.texC);
+                }
+            }
+        }
+        else
+        {
+            return bsdfSample.weight * gEnvMapSampler.eval(rayData.direction);
+        }
+    }
+    return float3(0);
+}
+
 struct Phat
 {
     float3 full;
@@ -822,7 +859,12 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
 
             {
                 var props = point.mi.getProperties(point.sd);
-                output.color = props.emission;
+                float3 delta = float3(0);
+                for (int i = 0; i < gDeltaSamples; ++i)
+                {
+                    delta += evalDelta(point.sd, point.mi, sg) / gDeltaSamples;
+                }
+                output.color = props.emission + delta;
                 output.albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
                                 props.specularTransmissionAlbedo;
             }
