@@ -79,6 +79,7 @@ public:
 
 private:
     void parseProperties(const Properties& props);
+    void prepareVars();
     bool definesOutdated();
     void updateDefines();
 
@@ -117,6 +118,13 @@ private:
         uint spatialReuse = 1;
     } mDefines;
 
+    /// Max number of indirect bounces (0 = none).
+    uint mMaxBounces = 3;
+    /// Compute direct illumination (otherwise indirect only).
+    bool mComputeDirect = true;
+    /// Use importance sampling for materials.
+    bool mUseImportanceSampling = true;
+
     // Runtime data
 
     /// Frame count since scene was loaded.
@@ -124,7 +132,12 @@ private:
     bool mOptionsChanged = false;
     bool mHotReloaded = false;
 
-    /// ReSTIR Compute Pass (uses inline ray tracing)
-    ref<ComputePass> mPass;
+    /// Ray tracing program.
+    struct
+    {
+        ref<Program> program;
+        ref<RtBindingTable> bindingTable;
+        ref<RtProgramVars> vars;
+    } mTracer;
 };
 FALCOR_ENUM_REGISTER(ColorReSTIR::OutputMode);

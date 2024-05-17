@@ -36,7 +36,12 @@ extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registr
 
 namespace
 {
-const char kShaderFile[] = "RenderPasses/ColorReSTIR/ColorReSTIR.cs.slang";
+const char kShaderFile[] = "RenderPasses/ColorReSTIR/ColorReSTIR.rt.slang";
+
+// Ray tracing settings that affect the traversal stack size.
+// These should be set as small as possible.
+const uint32_t kMaxPayloadSizeBytes = 72u;
+const uint32_t kMaxRecursionDepth = 2u;
 
 const char kInputViewDir[] = "viewW";
 const char kNormals[] = "guideNormalW";
@@ -86,10 +91,17 @@ const char kSpatialReuse[] = "SPATIAL_REUSE";
 const char kMaxSpatialSearch[] = "gMaxSpatialSearch";
 const char kSpatialRadius[] = "gSpatialRadius";
 
+// MinimalPathTracer
+const char kMaxBounces[] = "maxBounces";
+const char kComputeDirect[] = "computeDirect";
+const char kUseImportanceSampling[] = "useImportanceSampling";
+
 struct EmissiveSample
 {
     float2 barycentric{0, 0};
     uint triangleIndex{0};
+    float distSqr{0};
+    float cosine{0};
 };
 struct ReSTIRSample
 {
@@ -150,6 +162,15 @@ void ColorReSTIR::parseProperties(const Properties& props)
             mConfig.maxSpatialSearch = value;
         else if (key == kSpatialRadius)
             mConfig.spatialRadius = value;
+
+        // MinimalPathTracer
+        else if (key == kMaxBounces)
+            mMaxBounces = value;
+        else if (key == kComputeDirect)
+            mComputeDirect = value;
+        else if (key == kUseImportanceSampling)
+            mUseImportanceSampling = value;
+
         else
             logWarning("Unknown property '{}' in ColorReSTIR properties.", key);
     }
@@ -170,6 +191,12 @@ Properties ColorReSTIR::getProperties() const
     props[kSpatialReuse] = mConfig.spatialReuse;
     props[kMaxSpatialSearch] = mConfig.maxSpatialSearch;
     props[kSpatialRadius] = mConfig.spatialRadius;
+
+    // MinimalPathTracer
+    props[kMaxBounces] = mMaxBounces;
+    props[kComputeDirect] = mComputeDirect;
+    props[kUseImportanceSampling] = mUseImportanceSampling;
+
     return props;
 }
 
@@ -191,18 +218,16 @@ RenderPassReflection ColorReSTIR::reflect(const CompileData& compileData)
 void ColorReSTIR::compile(RenderContext* pRenderContext, const CompileData& compileData)
 {
     const size_t count = compileData.defaultTexDims.x * compileData.defaultTexDims.y;
+    const std::vector<Temporal> data(count);
     const auto defaultFlags = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
     for (size_t i = 0; i < std::size(mReSTIRBuffers); ++i)
     {
-        mReSTIRBuffers[i] = mpDevice->createStructuredBuffer(sizeof(Temporal), count, defaultFlags, MemoryType::DeviceLocal);
+        mReSTIRBuffers[i] = mpDevice->createStructuredBuffer(sizeof(Temporal), count, defaultFlags, MemoryType::DeviceLocal, data.data());
     }
 }
 
 void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    const uint2 targetDim = renderData.getDefaultTextureDims();
-    FALCOR_ASSERT(targetDim.x > 0 && targetDim.y > 0);
-
     if (mHotReloaded)
     {
         setScene(pRenderContext, mScene);
@@ -244,20 +269,22 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
         logWarning("Depth-of-field requires the '{}' input. Expect incorrect shading.", kInputViewDir);
     }
 
-    DefineList defines{};
-    defines.add(mScene->getSceneDefines());
-    defines.add(mSampleGenerator->getDefines());
-    defines.add(kSpatialReuse, std::to_string(mDefines.spatialReuse));
+    // Specialize program.
+    // These defines should not modify the program vars. Do not trigger program vars re-creation.
+    mTracer.program->addDefine(kSpatialReuse, std::to_string(mDefines.spatialReuse));
     // MinimalPathTracer
-    defines.add("USE_ANALYTIC_LIGHTS", mScene->useAnalyticLights() ? "1" : "0");
-    defines.add("USE_EMISSIVE_LIGHTS", mScene->useEmissiveLights() ? "1" : "0");
-    defines.add("USE_ENV_LIGHT", mScene->useEnvLight() ? "1" : "0");
-    defines.add("USE_ENV_BACKGROUND", mScene->useEnvBackground() ? "1" : "0");
+    mTracer.program->addDefine("MAX_BOUNCES", std::to_string(mMaxBounces));
+    mTracer.program->addDefine("COMPUTE_DIRECT", mComputeDirect ? "1" : "0");
+    mTracer.program->addDefine("USE_IMPORTANCE_SAMPLING", mUseImportanceSampling ? "1" : "0");
+    mTracer.program->addDefine("USE_ANALYTIC_LIGHTS", mScene->useAnalyticLights() ? "1" : "0");
+    mTracer.program->addDefine("USE_EMISSIVE_LIGHTS", mScene->useEmissiveLights() ? "1" : "0");
+    mTracer.program->addDefine("USE_ENV_LIGHT", mScene->useEnvLight() ? "1" : "0");
+    mTracer.program->addDefine("USE_ENV_BACKGROUND", mScene->useEnvBackground() ? "1" : "0");
 
     // For optional I/O resources, set 'is_valid_<name>' defines to inform the program of which ones it can access.
     // TODO: This should be moved to a more general mechanism using Slang.
-    defines.add(getValidResourceDefines(kInputChannels, renderData));
-    defines.add(getValidResourceDefines(kOutputChannels, renderData));
+    mTracer.program->addDefines(getValidResourceDefines(kInputChannels, renderData));
+    mTracer.program->addDefines(getValidResourceDefines(kOutputChannels, renderData));
 
     if (mScene->useEnvLight())
     {
@@ -273,28 +300,17 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
             mEmissiveSampler = std::make_unique<LightBVHSampler>(pRenderContext, mScene);
         }
         mEmissiveSampler->update(pRenderContext);
-        defines.add(mEmissiveSampler->getDefines());
+        mTracer.program->addDefines(mEmissiveSampler->getDefines());
     }
 
-    if (!mPass)
-    {
-        ProgramDesc desc;
-        desc.addShaderModules(mScene->getShaderModules());
-        desc.addShaderLibrary(kShaderFile).csEntry("main");
-        mPass = ComputePass::create(mpDevice, desc, defines);
-    }
-
-    auto program = mPass->getProgram();
-    mPass->getProgram()->setTypeConformances(mScene->getTypeConformances());
-    mPass->getProgram()->addDefines(defines);
-
+    // Prepare program vars. This may trigger shader compilation.
     // The program should have all necessary defines set at this point.
-    mPass->setVars(nullptr);
-    auto var = mPass->getRootVar();
-    mSampleGenerator->bindShaderData(var);
-    mScene->bindShaderData(var["gScene"]);
+    if (!mTracer.vars)
+        prepareVars();
+    FALCOR_ASSERT(mTracer.vars);
 
-    var["CB"]["gFrameDim"] = targetDim;
+    // Set constants.
+    auto var = mTracer.vars->getRootVar();
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
     var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
@@ -332,14 +348,18 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     for (const auto& channel : kInternalChannels)
         bind(channel);
 
-    // Dispatch
+    // Get dimensions of ray dispatch.
+    const uint2 targetDim = renderData.getDefaultTextureDims();
+    FALCOR_ASSERT(targetDim.x > 0 && targetDim.y > 0);
+
+    // Spawn the rays.
     for (int it = 0; it < 2; ++it)
     {
         var["CB"]["gIteration"] = it;
         var[kReSTIR] = mReSTIRBuffers[0];
         var[kPrevReSTIR] = mReSTIRBuffers[1];
         std::swap(mReSTIRBuffers[0], mReSTIRBuffers[1]);
-        mPass->execute(pRenderContext, uint3(targetDim, 1));
+        mScene->raytrace(pRenderContext, mTracer.program.get(), mTracer.vars, uint3(targetDim, 1));
     }
 
     pRenderContext->blit(renderData.getTexture(kNormals)->getSRV(), renderData.getTexture(kPrevNormals)->getRTV());
@@ -413,6 +433,19 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     dirty |= widget.var("Spatial radius", mConfig.spatialRadius, 0u, 1u << 16, intSpeed);
     widget.tooltip("The radius for spatial reuse measured in pixels.", true);
 
+    // Minimal Path Tracer
+    {
+        auto group = widget.group("Minimal Path Tracer Options", false);
+        dirty |= group.var("Max bounces", mMaxBounces, 0u, 1u << 16);
+        group.tooltip("Maximum path length for indirect illumination.\n0 = direct only\n1 = one indirect bounce etc.", true);
+
+        dirty |= group.checkbox("Evaluate direct illumination", mComputeDirect);
+        group.tooltip("Compute direct illumination.\nIf disabled only indirect is computed (when max bounces > 0).", true);
+
+        dirty |= group.checkbox("Use importance sampling", mUseImportanceSampling);
+        group.tooltip("Use importance sampling for materials", true);
+    }
+
     // If rendering options that modify the output have changed, set flag to indicate that.
     // In execute() we will pass the flag to other passes for reset of temporal data etc.
     if (dirty)
@@ -424,18 +457,12 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
 void ColorReSTIR::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene)
 {
     // Clear data for previous scene.
-    // After changing scene, the program should to be recreated.
-    mPass = nullptr;
+    // After changing scene, the raytracing program should to be recreated.
+    mTracer.program = nullptr;
+    mTracer.bindingTable = nullptr;
+    mTracer.vars = nullptr;
     mEnvMapSampler = nullptr;
     mEmissiveSampler = nullptr;
-    for (auto& buffer : mReSTIRBuffers)
-    {
-        if (buffer)
-        {
-            const std::vector<Temporal> data(buffer->getElementCount());
-            pRenderContext->updateBuffer(buffer.get(), data.data(), 0, buffer->getSize());
-        }
-    }
     mFrameCount = 0;
 
     // Set new scene.
@@ -447,7 +474,85 @@ void ColorReSTIR::setScene(RenderContext* pRenderContext, const ref<Scene>& pSce
         {
             logWarning("ColorReSTIR: This render pass does not support custom primitives.");
         }
+
+        // Create ray tracing program.
+        ProgramDesc desc;
+        desc.addShaderModules(mScene->getShaderModules());
+        desc.addShaderLibrary(kShaderFile);
+        desc.setMaxPayloadSize(kMaxPayloadSizeBytes);
+        desc.setMaxAttributeSize(mScene->getRaytracingMaxAttributeSize());
+        desc.setMaxTraceRecursionDepth(kMaxRecursionDepth);
+
+        mTracer.bindingTable = RtBindingTable::create(2, 2, mScene->getGeometryCount());
+        auto& sbt = mTracer.bindingTable;
+        sbt->setRayGen(desc.addRayGen("rayGen"));
+        sbt->setMiss(0, desc.addMiss("scatterMiss"));
+        sbt->setMiss(1, desc.addMiss("shadowMiss"));
+
+        if (mScene->hasGeometryType(Scene::GeometryType::TriangleMesh))
+        {
+            sbt->setHitGroup(
+                0,
+                mScene->getGeometryIDs(Scene::GeometryType::TriangleMesh),
+                desc.addHitGroup("scatterTriangleMeshClosestHit", "scatterTriangleMeshAnyHit")
+            );
+            sbt->setHitGroup(
+                1, mScene->getGeometryIDs(Scene::GeometryType::TriangleMesh), desc.addHitGroup("", "shadowTriangleMeshAnyHit")
+            );
+        }
+
+        if (mScene->hasGeometryType(Scene::GeometryType::DisplacedTriangleMesh))
+        {
+            sbt->setHitGroup(
+                0,
+                mScene->getGeometryIDs(Scene::GeometryType::DisplacedTriangleMesh),
+                desc.addHitGroup("scatterDisplacedTriangleMeshClosestHit", "", "displacedTriangleMeshIntersection")
+            );
+            sbt->setHitGroup(
+                1,
+                mScene->getGeometryIDs(Scene::GeometryType::DisplacedTriangleMesh),
+                desc.addHitGroup("", "", "displacedTriangleMeshIntersection")
+            );
+        }
+
+        if (mScene->hasGeometryType(Scene::GeometryType::Curve))
+        {
+            sbt->setHitGroup(
+                0, mScene->getGeometryIDs(Scene::GeometryType::Curve), desc.addHitGroup("scatterCurveClosestHit", "", "curveIntersection")
+            );
+            sbt->setHitGroup(1, mScene->getGeometryIDs(Scene::GeometryType::Curve), desc.addHitGroup("", "", "curveIntersection"));
+        }
+
+        if (mScene->hasGeometryType(Scene::GeometryType::SDFGrid))
+        {
+            sbt->setHitGroup(
+                0,
+                mScene->getGeometryIDs(Scene::GeometryType::SDFGrid),
+                desc.addHitGroup("scatterSdfGridClosestHit", "", "sdfGridIntersection")
+            );
+            sbt->setHitGroup(1, mScene->getGeometryIDs(Scene::GeometryType::SDFGrid), desc.addHitGroup("", "", "sdfGridIntersection"));
+        }
+
+        mTracer.program = Program::create(mpDevice, desc, mScene->getSceneDefines());
     }
+}
+
+void ColorReSTIR::prepareVars()
+{
+    FALCOR_ASSERT(mScene);
+    FALCOR_ASSERT(mTracer.program);
+
+    // Configure program.
+    mTracer.program->addDefines(mSampleGenerator->getDefines());
+    mTracer.program->setTypeConformances(mScene->getTypeConformances());
+
+    // Create program variables for the current program.
+    // This may trigger shader compilation. If it fails, throw an exception to abort rendering.
+    mTracer.vars = RtProgramVars::create(mpDevice, mTracer.program, mTracer.bindingTable);
+
+    // Bind utility classes into shared data.
+    auto var = mTracer.vars->getRootVar();
+    mSampleGenerator->bindShaderData(var);
 }
 
 bool ColorReSTIR::definesOutdated()

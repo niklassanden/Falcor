@@ -3,7 +3,7 @@ add_plugin(ColorReSTIR)
 target_sources(ColorReSTIR PRIVATE
     ColorReSTIR.cpp
     ColorReSTIR.h
-    ColorReSTIR.rt.slang
+    ColorReSTIR.cs.slang
 )
 
 target_copy_shaders(ColorReSTIR RenderPasses/ColorReSTIR)
