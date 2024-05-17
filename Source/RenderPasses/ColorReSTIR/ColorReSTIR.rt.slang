@@ -215,6 +215,15 @@ struct Reservoir
         c = c_;
         phat = phat_;
     }
+
+    [mutating]
+    void nullify()
+    {
+        Y = ReSTIRSample();
+        W = 0;
+        // c is kept
+        phat = 0;
+    }
 }
 struct Temporal
 {
@@ -776,7 +785,50 @@ Reservoir::Builder getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
             var phat = evalF(point.sd, point.mi, sg, X, gCandidatesVisibility);
             builder.update(Reservoir(X, invPdf, 1), 1.0f / gEmissiveSamples, phat, sg);
         }
-        // TODO: Add BSDF sampling
+
+        if (gBsdfSamples > 0)
+        {
+            var candidate = builder.build();
+            var candidatePhat = builder.phat;
+            builder = Reservoir::Builder();
+            if (!gCandidatesVisibility)
+            {
+                // Reset sample
+                candidatePhat = evalF(point.sd, point.mi, sg, candidate.Y, true);
+                if (candidatePhat.phat == 0)
+                {
+                    candidate.nullify();
+                }
+            }
+            float mCandidate = 1;
+            if (candidate.Y.type == 2)
+                mCandidate = (float)gEnvironmentSamples / (gEnvironmentSamples + gBsdfSamples);
+            else if (candidate.Y.type == 3)
+                mCandidate = (float)gEmissiveSamples / (gEmissiveSamples + gBsdfSamples);
+            builder.update(candidate, mCandidate, candidatePhat, sg);
+            for (int i = 0; i < gBsdfSamples; ++i)
+            {
+                sampleBsdf(point.sd, point.mi, sg, X, invPdf);
+                var phat = evalF(point.sd, point.mi, sg, X, false);
+                float mBSDF = 1;
+                if (phat.distance == kRayTMax)
+                    mBSDF = 1.f / (gEnvironmentSamples + gBsdfSamples);
+                else
+                    mBSDF = 1.f / (gEmissiveSamples + gBsdfSamples);
+                builder.update(Reservoir(X, invPdf, 1), mBSDF, phat, sg);
+            }
+        }
+        else if (!gCandidatesVisibility)
+        {
+            var candidate = builder.build();
+            var candidatePhat = evalF(point.sd, point.mi, sg, candidate.Y, true);
+            if (candidatePhat.phat == 0)
+            {
+                candidate.nullify();
+            }
+            builder = Reservoir::Builder();
+            builder.update(candidate, 1, candidatePhat, sg);
+        }
     }
 
     // Normalize confidence scale so that 1 is one frame of candidates
@@ -816,7 +868,7 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
             Reservoir::Builder candidateBuilder = getCandidate(point, sg);
             var candidate = candidateBuilder.build();
             // Add visibility term if we don't already have it
-            Phat phatCandidate = gCandidatesVisibility ? candidateBuilder.phat : evalF(point.sd, point.mi, sg, candidate.Y, true);
+            Phat phatCandidate = candidateBuilder.phat;
             LightColor candidateColor = LightColor(phatCandidate.full);
 
             uint2 oldPixel = reproject(pixel, frameDim);
