@@ -100,8 +100,6 @@ struct EmissiveSample
 {
     float2 barycentric{0, 0};
     uint triangleIndex{0};
-    float distSqr{0};
-    float cosine{0};
 };
 struct ReSTIRSample
 {
