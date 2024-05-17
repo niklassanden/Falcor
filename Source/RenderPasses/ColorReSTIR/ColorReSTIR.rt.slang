@@ -797,7 +797,7 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
                 old = gPrevReSTIR[toIndex(oldPixel, frameDim)];
             }
 
-            Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, true);
+            Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, false);
             var builder = Reservoir::Builder();
             float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.r.c), phatCandidate, sg);
             float wo = builder.update(old.r, (float)old.r.c / (candidate.c + old.r.c), phatOld, sg);
@@ -839,8 +839,10 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
                     float mDenominator = 0.f;
                     for (int j = 0; j < pointsCount; ++j)
                     {
-                        Phat otherPhat = evalF(points[j].sd, points[j].mi, sg, points[i].r.Y, true);
-                        var value = points[j].r.c * otherPhat.phat;
+                        float otherPhat =
+                            j == 0 ? phat.phat
+                                   : (i == j ? points[i].r.phat : evalF(points[j].sd, points[j].mi, sg, points[i].r.Y, true).phat);
+                        var value = points[j].r.c * otherPhat;
                         mDenominator += value;
                         if (i == j)
                             mNumerator += value;
