@@ -106,18 +106,22 @@ struct EmissiveSample
 {
     float2 barycentric;
     uint triangleIndex;
+    float distSqr;
+    float cosine; // dot product between normal of the triangle and the -light direction
 
     __init(float2 barycentric_ = float2(0, 0), uint triangleIndex_ = 0, float distSqr_ = 0.f, float cosine_ = 0.f)
     {
         barycentric = barycentric_;
         triangleIndex = triangleIndex_;
+        distSqr = distSqr_;
+        cosine = cosine_;
     }
 
     float3 getFullBarycentric() { return float3(1 - barycentric.x - barycentric.y, barycentric); }
 }
 struct ReSTIRSample
 {
-    int type;                // 0 = null, 1 = light, 2 = dir, 3 = emissive
+    int type;                // 0 = null, 1 = light, 2 = dir, 3 = emissive, 4 = half vector
     uint light;              // analytical
     float3 dir;              // environment
     EmissiveSample emissive; // emissive
@@ -186,7 +190,7 @@ struct Reservoir
         [mutating]
         float update(Reservoir r, float m, Phat phat_, inout SampleGenerator sg)
         {
-            float wi = m * phat_.phat * r.W;
+            float wi = m * phat_.phat * r.W * phat_.jacobian;
             Wsum += wi;
             c += r.c;
             if (sampleNext1D(sg) * Wsum < wi)
@@ -197,7 +201,11 @@ struct Reservoir
             return wi;
         }
 
-        Reservoir build() { return Reservoir(Y, phat.phat == 0 ? 0 : Wsum / phat.phat, min(c, gMaxConfidence), phat.phat); }
+        Reservoir build()
+        {
+            float phatV = phat.phat;
+            return Reservoir(Y, phatV == 0 ? 0 : Wsum / phatV, min(c, gMaxConfidence), phatV);
+        }
     }
 
     __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float phat_ = 0.f)
@@ -437,8 +445,6 @@ struct ReSTIRPoint
 
         // Load shading data.
         sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir, lod);
-        // Handle delta distributions separately
-        sd.mtl.setActiveLobes((uint)LobeType::NonDelta);
 
         // Create material instance at shading point.
         mi = gScene.materials.getMaterialInstance(sd, lod, getMaterialInstanceHints(hit));
@@ -586,46 +592,72 @@ void sampleEmissiveLight(ShadingData sd, inout SampleGenerator sg, out ReSTIRSam
             if (tls.pdf > 0)
             {
                 sample.type = 3;
-                sample.emissive = EmissiveSample(sample_triangle(tls.uv).yz, tls.triangleIndex);
-                invPdf = 1.f / tls.pdf * tls.distance * tls.distance / max(0, dot(-tls.dir, tls.normalW));
+                sample.emissive = EmissiveSample(
+                    sample_triangle(tls.uv).yz, tls.triangleIndex, tls.distance * tls.distance, max(0, dot(-tls.dir, tls.normalW))
+                );
+                invPdf = 1.f / tls.pdf;
             }
         }
     }
 }
 
+void sampleBsdf(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, out ReSTIRSample sample, out float invPdf)
+{
+    sample = {};
+    invPdf = 1;
+
+    BSDFSample bsdfSample;
+    if (mi.sample(sd, sg, bsdfSample, kUseImportanceSampling))
+    {
+        sample.type = 4;
+        sample.dir = sd.frame.toLocal(normalizeSafe(sd.V + bsdfSample.wo));
+        invPdf = 1.f / bsdfSample.pdf;
+    }
+}
+
 struct Phat
 {
+    float3 dir;
+    float distance;
     float3 full;
     float phat;
+    float jacobian;
 
     __init()
     {
+        dir = float3(0);
+        distance = 0;
         full = float3(0);
         phat = 0;
+        jacobian = 1;
     }
 }
-Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, inout ReSTIRSample X, bool checkVisibility)
+Phat evalF(
+    const ShadingData sd,
+    const IMaterialInstance mi,
+    inout SampleGenerator sg,
+    inout ReSTIRSample X,
+    bool checkVisibility,
+    bool updateX = false
+)
 {
     Phat phat = Phat();
 
-    float3 dir = float3(0);
-    float distance = 0;
     float3 Li;
     if (X.type == 1)
     {
         AnalyticLightSample ls;
         if (!sampleLight(sd.posW, gScene.getLight(X.light), sg, ls))
             return phat;
-
-        dir = ls.dir;
-        distance = ls.distance;
+        phat.dir = ls.dir;
         Li = ls.Li;
+        phat.distance = ls.distance;
     }
     else if (X.type == 2)
     {
-        dir = X.dir;
-        distance = kRayTMax;
-        Li = gEnvMapSampler.eval(dir);
+        phat.dir = X.dir;
+        Li = gEnvMapSampler.eval(phat.dir);
+        phat.distance = kRayTMax;
     }
     else if (X.type == 3)
     {
@@ -635,15 +667,69 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
         var barycentric = X.emissive.getFullBarycentric();
         var uv = triangle.getTexCoord(barycentric);
         var initialPos = triangle.getPosition(barycentric);
-        float distSqr = dot(initialPos - sd.posW, initialPos - sd.posW);
-        float cosine = max(0, dot(-normalizeSafe(initialPos - sd.posW), triangle.normal));
-        Li = gScene.materials.evalEmissive(triangle.materialID, uv) * cosine / distSqr;
+        {
+            float distSqr = dot(initialPos - sd.posW, initialPos - sd.posW);
+            float cosine = max(0, dot(-normalizeSafe(initialPos - sd.posW), triangle.normal));
+            float denom = (X.emissive.cosine * distSqr);
+            phat.jacobian = denom == 0 ? 0 : (cosine * X.emissive.distSqr) / denom;
+            if (updateX)
+            {
+                X.emissive.distSqr = distSqr;
+                X.emissive.cosine = cosine;
+            }
+        }
+        Li = gScene.materials.evalEmissive(triangle.materialID, uv);
 
         // Use points with offsets to avoid self intersection
         var safePos = computeRayOrigin(initialPos, triangle.normal);
         var origin = computeRayOrigin(sd.posW, dot(sd.faceN, safePos - sd.posW) >= 0.f ? sd.faceN : -sd.faceN);
-        dir = normalizeSafe(safePos - origin);
-        distance = length(safePos - origin);
+        phat.dir = normalizeSafe(safePos - origin);
+        phat.distance = length(safePos - origin);
+    }
+    else if (X.type == 4)
+    {
+        checkVisibility = false;
+
+        float3 halfVector = sd.frame.fromLocal(X.dir);
+        ScatterRayData rayData = ScatterRayData();
+        rayData.direction = reflect(-sd.V, halfVector);
+        rayData.origin = sd.computeRayOrigin(dot(rayData.direction, sd.getOrientedFaceNormal()) >= 0);
+        traceScatterRay(rayData);
+
+        HitInfo hit = HitInfo(rayData.hit);
+        if (hit.isValid())
+        {
+            bool shadowed = true;
+            if (hit.getType() == HitType::Triangle)
+            {
+                TriangleHit triangleHit = hit.getTriangleHit();
+                uint index = gScene.lightCollection.getTriangleIndex(triangleHit.instanceID, triangleHit.primitiveIndex);
+                if (index != gScene.lightCollection.kInvalidIndex)
+                {
+                    shadowed = false;
+
+                    let lod = ExplicitLodTextureSampler(0.f);
+                    VertexData v = gScene.getVertexData(triangleHit);
+                    uint materialID = gScene.getMaterialID(triangleHit.instanceID);
+                    ShadingData hitSD = gScene.materials.prepareShadingData(v, materialID, -rayData.direction, lod);
+                    float distanceSqr = dot(hitSD.posW - sd.posW, hitSD.posW - sd.posW);
+
+                    Li = gScene.materials.evalEmissive(materialID, v.texC);
+                    phat.dir = rayData.direction;
+                    phat.distance = sqrt(distanceSqr);
+                }
+            }
+            if (shadowed)
+            {
+                return phat;
+            }
+        }
+        else
+        {
+            phat.dir = rayData.direction;
+            Li = gEnvMapSampler.eval(phat.dir);
+            phat.distance = kRayTMax;
+        }
     }
     else
     {
@@ -654,22 +740,22 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
     const uint lobeTypes = mi.getLobeTypes(sd);
     const bool hasReflection = lobeTypes & uint(LobeType::Reflection);
     const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
-    float NdotL = dot(sd.getOrientedFaceNormal(), dir);
+    float NdotL = dot(sd.getOrientedFaceNormal(), phat.dir);
     if ((NdotL <= kMinCosTheta && !hasTransmission) || (NdotL >= -kMinCosTheta && !hasReflection))
         return phat;
 
     if (checkVisibility)
     {
         // Get origin with offset applied in direction of the geometry normal to avoid self-intersection.
-        const float3 origin = computeRayOrigin(sd.posW, dot(sd.faceN, dir) >= 0.f ? sd.faceN : -sd.faceN);
+        const float3 origin = computeRayOrigin(sd.posW, dot(sd.faceN, phat.dir) >= 0.f ? sd.faceN : -sd.faceN);
 
         // Test visibility by tracing a shadow ray.
-        if (!traceShadowRay(origin, dir, distance))
+        if (!traceShadowRay(origin, phat.dir, phat.distance))
             return phat;
     }
 
     // Evaluate contribution.
-    phat.full = mi.eval(sd, dir, sg) * Li;
+    phat.full = mi.eval(sd, phat.dir, sg) * Li;
     phat.phat = sumColor(phat.full);
     return phat;
 }
@@ -700,16 +786,48 @@ Reservoir::Builder getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
             builder.update(Reservoir(X, invPdf, 1), 1.0f / gEmissiveSamples, phat, sg);
         }
 
-        if (!gCandidatesVisibility)
+        if (gBsdfSamples > 0)
+        {
+            var candidate = builder.build();
+            var candidatePhat = builder.phat;
+            builder = Reservoir::Builder();
+            if (!gCandidatesVisibility)
+            {
+                // Reset sample
+                candidatePhat = evalF(point.sd, point.mi, sg, candidate.Y, true);
+                if (candidatePhat.phat == 0)
+                {
+                    candidate.nullify();
+                }
+            }
+            float mCandidate = 1;
+            if (candidate.Y.type == 2)
+                mCandidate = (float)gEnvironmentSamples / (gEnvironmentSamples + gBsdfSamples);
+            else if (candidate.Y.type == 3)
+                mCandidate = (float)gEmissiveSamples / (gEmissiveSamples + gBsdfSamples);
+            builder.update(candidate, mCandidate, candidatePhat, sg);
+            for (int i = 0; i < gBsdfSamples; ++i)
+            {
+                sampleBsdf(point.sd, point.mi, sg, X, invPdf);
+                var phat = evalF(point.sd, point.mi, sg, X, false);
+                float mBSDF = 1;
+                if (phat.distance == kRayTMax)
+                    mBSDF = 1.f / (gEnvironmentSamples + gBsdfSamples);
+                else
+                    mBSDF = 1.f / (gEmissiveSamples + gBsdfSamples);
+                builder.update(Reservoir(X, invPdf, 1), mBSDF, phat, sg);
+            }
+        }
+        else if (!gCandidatesVisibility)
         {
             var candidate = builder.build();
             var candidatePhat = evalF(point.sd, point.mi, sg, candidate.Y, true);
             if (candidatePhat.phat == 0)
             {
-                builder = Reservoir::Builder();
-                builder.c = candidate.c;
                 candidate.nullify();
             }
+            builder = Reservoir::Builder();
+            builder.update(candidate, 1, candidatePhat, sg);
         }
     }
 
@@ -760,7 +878,7 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
                 old = gPrevReSTIR[toIndex(oldPixel, frameDim)];
             }
 
-            Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, true);
+            Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, true, true);
             var builder = Reservoir::Builder();
             float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.r.c), phatCandidate, sg);
             float wo = builder.update(old.r, (float)old.r.c / (candidate.c + old.r.c), phatOld, sg);
@@ -797,13 +915,13 @@ Output restirDirect(const uint2 pixel, const uint2 frameDim)
                 var colorBuilder = LightColor::Builder();
                 for (int i = 0; i < pointsCount; ++i)
                 {
-                    Phat phat = evalF(points[0].sd, points[0].mi, sg, points[i].r.Y, true);
+                    Phat phat = evalF(points[0].sd, points[0].mi, sg, points[i].r.Y, true, true);
                     float mNumerator = 0.f;
                     float mDenominator = 0.f;
                     for (int j = 0; j < pointsCount; ++j)
                     {
                         Phat otherPhat = evalF(points[j].sd, points[j].mi, sg, points[i].r.Y, true);
-                        var value = points[j].r.c * otherPhat.phat;
+                        var value = points[j].r.c * otherPhat.phat * otherPhat.jacobian;
                         mDenominator += value;
                         if (i == j)
                             mNumerator += value;
