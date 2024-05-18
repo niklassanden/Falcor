@@ -69,6 +69,7 @@ cbuffer CB
 
     uint gIteration; // ReSTIR iteration
     OutputMode gOutputMode;
+    bool gReuseDemodulated;
     uint gAnalyticalSamples;
     uint gEnvironmentSamples;
     uint gEmissiveSamples;
@@ -339,6 +340,7 @@ struct ReSTIRPoint
     ShadingData sd;
     IMaterialInstance mi;
     Reservoir r;
+    LightColor c;
 
     [mutating]
     bool initialize(uint2 pixel)
@@ -645,7 +647,15 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
     }
 
     // Evaluate contribution.
-    phat.full = mi.eval(sd, dir, sg) * Li;
+    var bsdf = mi.eval(sd, dir, sg);
+    phat.full = (any(isnan(bsdf)) ? 0 : bsdf) * Li;
+    if (gReuseDemodulated)
+    {
+        var props = mi.getProperties(sd);
+        var albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
+                     props.specularTransmissionAlbedo;
+        phat.full = phat.full / max(albedo, 1e-3);
+    }
     phat.phat = sumColor(phat.full);
     return phat;
 }
@@ -754,7 +764,7 @@ Output restirDirect(const uint2 pixel)
             ReSTIRPoint points[kSpatialReuse + 1];
             points[0] = point;
             points[0].r = gPrevReSTIR[toIndex(pixel)].r;
-            LightColor color = gPrevReSTIR[toIndex(pixel)].c;
+            points[0].c = gPrevReSTIR[toIndex(pixel)].c;
             int pointsCount = 1;
             for (int i = 0; i < gMaxSpatialSearch && pointsCount <= kSpatialReuse; ++i)
             {
@@ -767,6 +777,7 @@ Output restirDirect(const uint2 pixel)
                         if (grads.allowSpatialReuse(pixel, neighbor, z, normal))
                         {
                             points[pointsCount].r = gPrevReSTIR[toIndex(neighbor)].r;
+                            points[pointsCount].c = gPrevReSTIR[toIndex(neighbor)].c;
                             ++pointsCount;
                         }
                     }
@@ -794,39 +805,41 @@ Output restirDirect(const uint2 pixel)
                     float m = mDenominator == 0 ? 0 : mNumerator / mDenominator;
 
                     float w = builder.update(points[i].r, m, phat, sg);
-                    colorBuilder.update(i == 0 ? color : LightColor(phat.full), w);
+                    colorBuilder.update(i == 0 ? points[0].c : LightColor(phat.full), w);
                 }
                 // Don't increase confidence during spatial reuse
                 builder.c = points[0].r.c;
                 points[0].r = builder.build();
-                color = colorBuilder.build();
+                points[0].c = colorBuilder.build();
             }
-            gReSTIR[toIndex(pixel)] = Temporal(points[0].r, color);
+            gReSTIR[toIndex(pixel)] = Temporal(points[0].r, points[0].c);
 
             {
-                var props = point.mi.getProperties(point.sd);
                 float3 delta = float3(0);
                 for (int i = 0; i < gDeltaSamples; ++i)
                 {
                     delta += evalDelta(point.sd, point.mi, sg) / gDeltaSamples;
                 }
+                var props = point.mi.getProperties(point.sd);
                 output.color = props.emission + delta;
                 output.albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
                                 props.specularTransmissionAlbedo;
             }
+            float3 modulate = gReuseDemodulated ? max(output.albedo, 1e-3) : float3(1);
             switch (gOutputMode)
             {
             case OutputMode::Default:
-                output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).full * points[0].r.W;
+                output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).full * points[0].r.W * modulate;
                 break;
             case OutputMode::ColorDistribution:
-                output.color = color.color;
+                output.color = points[0].c.color;
                 break;
             case OutputMode::Luminance:
                 output.color = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W;
                 break;
             case OutputMode::Combined:
-                output.color += color.apply(evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W);
+                output.color +=
+                    points[0].c.apply(evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W) * modulate;
                 break;
             default:
                 output.color = float3(0.f);

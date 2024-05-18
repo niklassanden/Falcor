@@ -75,6 +75,7 @@ const char kReSTIR[] = "gReSTIR";
 const char kPrevReSTIR[] = "gPrevReSTIR";
 
 const char kOutputMode[] = "gOutputMode";
+const char kReuseDemodulated[] = "gReuseDemodulated";
 const char kAnalyticalSamples[] = "gAnalyticalSamples";
 const char kEnvironmentSamples[] = "gEnvironmentSamples";
 const char kEmissiveSamples[] = "gEmissiveSamples";
@@ -130,6 +131,8 @@ void ColorReSTIR::parseProperties(const Properties& props)
     {
         if (key == kOutputMode)
             mConfig.outputMode = value;
+        else if (key == kReuseDemodulated)
+            mConfig.reuseDemodulated = value;
         else if (key == kAnalyticalSamples)
             mConfig.analyticalSamples = value;
         else if (key == kEnvironmentSamples)
@@ -160,6 +163,7 @@ Properties ColorReSTIR::getProperties() const
 {
     Properties props;
     props[kOutputMode] = mConfig.outputMode;
+    props[kReuseDemodulated] = mConfig.reuseDemodulated;
     props[kAnalyticalSamples] = mConfig.analyticalSamples;
     props[kEnvironmentSamples] = mConfig.environmentSamples;
     props[kEmissiveSamples] = mConfig.emissiveSamples;
@@ -298,6 +302,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
     var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
+    var["CB"][kReuseDemodulated] = mConfig.reuseDemodulated;
     var["CB"][kAnalyticalSamples] = mConfig.analyticalSamples;
     var["CB"][kEnvironmentSamples] = mConfig.environmentSamples;
     var["CB"][kEmissiveSamples] = mConfig.emissiveSamples;
@@ -370,6 +375,9 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     }
 
     dirty |= widget.dropdown("Output Mode", mConfig.outputMode);
+
+    dirty |= widget.checkbox("Reuse demodulated", mConfig.reuseDemodulated);
+    widget.tooltip("Whether or not to reuse demodulated illumination.", true);
 
     {
         auto group = widget.group("Candidate sample counts", false);

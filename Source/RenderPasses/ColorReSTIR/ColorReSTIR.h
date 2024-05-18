@@ -101,6 +101,7 @@ private:
     struct
     {
         OutputMode outputMode = OutputMode::Combined;
+        bool reuseDemodulated = false;
         uint analyticalSamples = 4;
         uint environmentSamples = 4;
         uint emissiveSamples = 4;
