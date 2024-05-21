@@ -751,12 +751,14 @@ Output restirDirect(const uint2 pixel)
                 old = gPrevReSTIR[toIndex(oldPixel)];
             }
 
-            Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, false);
+            Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, true);
             var builder = Reservoir::Builder();
             float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.r.c), phatCandidate, sg);
             float wo = builder.update(old.r, (float)old.r.c / (candidate.c + old.r.c), phatOld, sg);
             point.r = builder.build();
-            gReSTIR[toIndex(pixel)] = Temporal(point.r, LightColor::combine(candidateColor, wc, old.c, wo));
+            LightColor l = LightColor();
+            l.color = lerp(phatCandidate.full * candidate.W, phatOld.full * old.r.W, (float)old.r.c / (old.r.c + candidate.c));
+            gReSTIR[toIndex(pixel)] = Temporal(point.r, l);
         }
         else // Spatial + Channel
         {
@@ -787,6 +789,10 @@ Output restirDirect(const uint2 pixel)
             {
                 var builder = Reservoir::Builder();
                 var colorBuilder = LightColor::Builder();
+                float ws[2];
+                float3 fulls[2];
+                float Ws[2];
+                float ms[2];
                 for (int i = 0; i < pointsCount; ++i)
                 {
                     Phat phat = evalF(points[0].sd, points[0].mi, sg, points[i].r.Y, true);
@@ -806,11 +812,15 @@ Output restirDirect(const uint2 pixel)
 
                     float w = builder.update(points[i].r, m, phat, sg);
                     colorBuilder.update(i == 0 ? points[0].c : LightColor(phat.full), w);
+                    ws[i] = w;
+                    fulls[i] = phat.full;
+                    Ws[i] = points[i].r.W;
+                    ms[i] = m;
                 }
                 // Don't increase confidence during spatial reuse
                 builder.c = points[0].r.c;
                 points[0].r = builder.build();
-                points[0].c = colorBuilder.build();
+                points[0].c.color = ms[0] * points[0].c.color + ms[1] * fulls[1] * Ws[1];
             }
             gReSTIR[toIndex(pixel)] = Temporal(points[0].r, points[0].c);
 
@@ -838,8 +848,7 @@ Output restirDirect(const uint2 pixel)
                 output.color = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W;
                 break;
             case OutputMode::Combined:
-                output.color +=
-                    points[0].c.apply(evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W) * modulate;
+                output.color += points[0].c.color * modulate;
                 break;
             default:
                 output.color = float3(0.f);
