@@ -60,7 +60,13 @@ enum class OutputMode : uint32_t
     Luminance = 1u,
     ColorDistribution = 2u,
     Combined = 3u,
-};
+}
+enum class TemporalColorEstimate : uint32_t
+{
+    None = 0u,
+    Full = 1u,
+    Gradient = 2u,
+}
 cbuffer CB
 {
     uint2 gFrameDim;
@@ -69,6 +75,8 @@ cbuffer CB
 
     uint gIteration; // ReSTIR iteration
     OutputMode gOutputMode;
+    TemporalColorEstimate gTemporalColorEstimate;
+    bool gNormalizeColorEstimate;
     bool gReuseDemodulated;
     uint gAnalyticalSamples;
     uint gEnvironmentSamples;
@@ -136,13 +144,19 @@ struct LightColor
 {
     float3 color;
 
-    __init(float3 light = float3(0.f))
-    {
-        float denom = sumColor(light);
-        color = denom == 0 ? light : light / denom;
-    }
+    __init(float3 color_ = float3(0.f)) { color = color_; }
 
     float3 apply(float light) { return light * color; }
+
+    LightColor normalize(bool normalize = true)
+    {
+        if (normalize)
+        {
+            float denom = sumColor(color);
+            return LightColor(denom == 0 ? color : color / denom);
+        }
+        return this;
+    }
 
     static LightColor combine(LightColor a, float wa, LightColor b, float wb) { return LightColor(a.color * wa + b.color * wb); }
 
@@ -153,7 +167,7 @@ struct LightColor
         __init(float3 color_ = float3(0.f)) { color = color_; }
 
         [mutating]
-        void update(LightColor light, float weight) { color += light.apply(weight); }
+        void update(LightColor color_, float weight) { color += color_.apply(weight); }
 
         LightColor build() { return LightColor(color); }
     }
@@ -219,11 +233,13 @@ struct Temporal
 {
     Reservoir r;
     LightColor c;
+    LightColor old;
 
-    __init(Reservoir r_ = Reservoir(), LightColor c_ = LightColor())
+    __init(Reservoir r_ = Reservoir(), LightColor c_ = LightColor(), LightColor old_ = LightColor())
     {
         r = r_;
         c = c_;
+        old = old_;
     }
 }
 RWStructuredBuffer<Temporal> gReSTIR;
@@ -740,9 +756,6 @@ Output restirDirect(const uint2 pixel)
         {
             Reservoir::Builder candidateBuilder = getCandidate(point, sg);
             var candidate = candidateBuilder.build();
-            // Add visibility term if we don't already have it
-            Phat phatCandidate = candidateBuilder.phat;
-            LightColor candidateColor = LightColor(phatCandidate.full);
 
             uint2 oldPixel = reproject(pixel);
             Temporal old = Temporal();
@@ -753,12 +766,34 @@ Output restirDirect(const uint2 pixel)
 
             Phat phatOld = evalF(point.sd, point.mi, sg, old.r.Y, true);
             var builder = Reservoir::Builder();
-            float wc = builder.update(candidate, (float)candidate.c / (candidate.c + old.r.c), phatCandidate, sg);
-            float wo = builder.update(old.r, (float)old.r.c / (candidate.c + old.r.c), phatOld, sg);
+            float mc = (float)candidate.c / (candidate.c + old.r.c);
+            float wc = builder.update(candidate, mc, candidateBuilder.phat, sg);
+            float wo = builder.update(old.r, 1 - mc, phatOld, sg);
             point.r = builder.build();
-            LightColor l = LightColor();
-            l.color = lerp(phatCandidate.full * candidate.W, phatOld.full * old.r.W, (float)old.r.c / (old.r.c + candidate.c));
-            gReSTIR[toIndex(pixel)] = Temporal(point.r, l);
+            LightColor l;
+            {
+                float3 oldColor = gTemporalColorEstimate == TemporalColorEstimate::None ? phatOld.full * old.r.W : old.c.color;
+                if (gTemporalColorEstimate == TemporalColorEstimate::Gradient)
+                {
+                    float3 currentRaw = phatOld.full * old.r.W;
+                    float3 current = LightColor(currentRaw).normalize(gNormalizeColorEstimate).color;
+                    float3 prev = old.old.normalize(gNormalizeColorEstimate).color;
+                    float3 largest = max(prev, current);
+                    float3 relativeError = abs(prev - current) / select(largest == 0, 1, largest);
+                    oldColor = lerp(oldColor, currentRaw, relativeError);
+                }
+
+                if (gNormalizeColorEstimate)
+                {
+                    l = LightColor::combine(LightColor(candidateBuilder.phat.full).normalize(), wc, LightColor(oldColor).normalize(), wo)
+                            .normalize();
+                }
+                else
+                {
+                    l = LightColor(lerp(candidateBuilder.phat.full * candidate.W, oldColor, 1 - mc));
+                }
+            }
+            gReSTIR[toIndex(pixel)] = Temporal(point.r, l, LightColor(phatOld.full * point.r.W));
         }
         else // Spatial + Channel
         {
@@ -767,6 +802,7 @@ Output restirDirect(const uint2 pixel)
             points[0] = point;
             points[0].r = gPrevReSTIR[toIndex(pixel)].r;
             points[0].c = gPrevReSTIR[toIndex(pixel)].c;
+            var old = gPrevReSTIR[toIndex(pixel)].old;
             int pointsCount = 1;
             for (int i = 0; i < gMaxSpatialSearch && pointsCount <= kSpatialReuse; ++i)
             {
@@ -788,7 +824,6 @@ Output restirDirect(const uint2 pixel)
             if (pointsCount > 1)
             {
                 var builder = Reservoir::Builder();
-                var colorBuilder = LightColor::Builder();
                 float ws[2];
                 float3 fulls[2];
                 float Ws[2];
@@ -811,7 +846,6 @@ Output restirDirect(const uint2 pixel)
                     float m = mDenominator == 0 ? 0 : mNumerator / mDenominator;
 
                     float w = builder.update(points[i].r, m, phat, sg);
-                    colorBuilder.update(i == 0 ? points[0].c : LightColor(phat.full), w);
                     ws[i] = w;
                     fulls[i] = phat.full;
                     Ws[i] = points[i].r.W;
@@ -820,9 +854,17 @@ Output restirDirect(const uint2 pixel)
                 // Don't increase confidence during spatial reuse
                 builder.c = points[0].r.c;
                 points[0].r = builder.build();
-                points[0].c.color = ms[0] * points[0].c.color + ms[1] * fulls[1] * Ws[1];
+                if (gNormalizeColorEstimate)
+                {
+                    points[0].c = LightColor::combine(points[0].c, ws[0], LightColor(fulls[1]).normalize(), ws[1]).normalize();
+                }
+                else
+                {
+                    points[0].c = LightColor::combine(points[0].c, ms[0], LightColor(fulls[1] * Ws[1]), ms[1]);
+                }
+                old = LightColor(builder.phat.full * points[0].r.W);
             }
-            gReSTIR[toIndex(pixel)] = Temporal(points[0].r, points[0].c);
+            gReSTIR[toIndex(pixel)] = Temporal(points[0].r, points[0].c, old);
 
             {
                 float3 delta = float3(0);
@@ -848,10 +890,19 @@ Output restirDirect(const uint2 pixel)
                 output.color = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W;
                 break;
             case OutputMode::Combined:
-                output.color += points[0].c.color * modulate;
+                if (gNormalizeColorEstimate)
+                {
+                    output.color +=
+                        points[0].c.apply(evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W) * modulate;
+                }
+                else
+                {
+                    output.color += points[0].c.color * modulate;
+                }
                 break;
             default:
                 output.color = float3(0.f);
+                break;
             }
         }
     }

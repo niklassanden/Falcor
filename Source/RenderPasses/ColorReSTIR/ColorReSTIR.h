@@ -77,6 +77,21 @@ public:
         }
     );
 
+    enum class TemporalColorEstimate : uint32_t
+    {
+        None = 0u,
+        Full = 1u,
+        Gradient = 2u,
+    };
+    FALCOR_ENUM_INFO(
+        TemporalColorEstimate,
+        {
+            {TemporalColorEstimate::None, "None"},
+            {TemporalColorEstimate::Full, "Full"},
+            {TemporalColorEstimate::Gradient, "Gradient"},
+        }
+    );
+
 private:
     void parseProperties(const Properties& props);
     bool definesOutdated();
@@ -101,6 +116,8 @@ private:
     struct
     {
         OutputMode outputMode = OutputMode::Combined;
+        TemporalColorEstimate temporalColorEstimate = TemporalColorEstimate::Gradient;
+        bool normalizeColorEstimate = false;
         bool reuseDemodulated = false;
         uint analyticalSamples = 4;
         uint environmentSamples = 4;
@@ -129,3 +146,4 @@ private:
     ref<ComputePass> mPass;
 };
 FALCOR_ENUM_REGISTER(ColorReSTIR::OutputMode);
+FALCOR_ENUM_REGISTER(ColorReSTIR::TemporalColorEstimate);

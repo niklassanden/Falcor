@@ -75,6 +75,8 @@ const char kReSTIR[] = "gReSTIR";
 const char kPrevReSTIR[] = "gPrevReSTIR";
 
 const char kOutputMode[] = "gOutputMode";
+const char kTemporalColorEstimate[] = "gTemporalColorEstimate";
+const char kNormalizeColorEstimate[] = "gNormalizeColorEstimate";
 const char kReuseDemodulated[] = "gReuseDemodulated";
 const char kAnalyticalSamples[] = "gAnalyticalSamples";
 const char kEnvironmentSamples[] = "gEnvironmentSamples";
@@ -114,6 +116,7 @@ struct Temporal
 {
     Reservoir r;
     LightColor c;
+    LightColor old;
 };
 } // namespace
 
@@ -131,6 +134,10 @@ void ColorReSTIR::parseProperties(const Properties& props)
     {
         if (key == kOutputMode)
             mConfig.outputMode = value;
+        else if (key == kTemporalColorEstimate)
+            mConfig.temporalColorEstimate = value;
+        else if (key == kNormalizeColorEstimate)
+            mConfig.normalizeColorEstimate = value;
         else if (key == kReuseDemodulated)
             mConfig.reuseDemodulated = value;
         else if (key == kAnalyticalSamples)
@@ -163,6 +170,8 @@ Properties ColorReSTIR::getProperties() const
 {
     Properties props;
     props[kOutputMode] = mConfig.outputMode;
+    props[kTemporalColorEstimate] = mConfig.temporalColorEstimate;
+    props[kNormalizeColorEstimate] = mConfig.normalizeColorEstimate;
     props[kReuseDemodulated] = mConfig.reuseDemodulated;
     props[kAnalyticalSamples] = mConfig.analyticalSamples;
     props[kEnvironmentSamples] = mConfig.environmentSamples;
@@ -302,6 +311,8 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
     var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
+    var["CB"][kTemporalColorEstimate] = static_cast<uint32_t>(mConfig.temporalColorEstimate);
+    var["CB"][kNormalizeColorEstimate] = mConfig.normalizeColorEstimate;
     var["CB"][kReuseDemodulated] = mConfig.reuseDemodulated;
     var["CB"][kAnalyticalSamples] = mConfig.analyticalSamples;
     var["CB"][kEnvironmentSamples] = mConfig.environmentSamples;
@@ -374,7 +385,14 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
         }
     }
 
-    dirty |= widget.dropdown("Output Mode", mConfig.outputMode);
+    dirty |= widget.dropdown("Output mode", mConfig.outputMode);
+
+    dirty |= widget.dropdown("Temporal gradient", mConfig.temporalColorEstimate);
+
+    dirty |= widget.checkbox("Normalize color estimate", mConfig.normalizeColorEstimate);
+    widget.tooltip(
+        "Whether or not to normalize the color estimate. If it is false, then the luminance is also estimated as part of the color.", true
+    );
 
     dirty |= widget.checkbox("Reuse demodulated", mConfig.reuseDemodulated);
     widget.tooltip("Whether or not to reuse demodulated illumination.", true);
