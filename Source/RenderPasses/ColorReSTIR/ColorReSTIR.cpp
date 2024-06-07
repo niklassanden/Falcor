@@ -67,6 +67,7 @@ const ChannelList kInternalChannels = {
 const ChannelList kOutputChannels = {
     // clang-format off
     { "color",          "gOutputColor",     "Output color (sum of direct and indirect)", false, ResourceFormat::RGBA32Float },
+    { "delta",          "gOutputDelta",     "Output color from delta distributions", false, ResourceFormat::RGBA32Float },
     { "albedo",         "gOutputAlbedo",    "Sum of diffuse and specular reflectance", false, ResourceFormat::RGBA32Float },
     // clang-format on
 };

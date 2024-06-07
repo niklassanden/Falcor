@@ -105,6 +105,7 @@ Texture2D<float4> gViewW; // Optional (this must have a direction for all pixels
 
 // Outputs
 RWTexture2D<float4> gOutputColor;
+RWTexture2D<float4> gOutputDelta;
 RWTexture2D<float4> gOutputAlbedo;
 
 // Internals
@@ -728,6 +729,7 @@ Reservoir::Builder getCandidate(ReSTIRPoint point, inout SampleGenerator sg)
 struct Output
 {
     float3 color;
+    float3 delta;
     float3 albedo;
 }
 Output restirDirect(const uint2 pixel)
@@ -873,7 +875,8 @@ Output restirDirect(const uint2 pixel)
                     delta += evalDelta(point.sd, point.mi, sg) / gDeltaSamples;
                 }
                 var props = point.mi.getProperties(point.sd);
-                output.color = props.emission + delta;
+                output.color = props.emission;
+                output.delta = delta;
                 output.albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
                                 props.specularTransmissionAlbedo;
             }
@@ -926,6 +929,7 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     {
         Output output = restirDirect(pixel);
         gOutputColor[pixel] = float4(output.color, 1.f);
+        gOutputDelta[pixel] = float4(output.delta, 1.f);
         gOutputAlbedo[pixel] = float4(output.albedo, 1.f);
     }
 }
