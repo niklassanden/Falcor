@@ -22,7 +22,7 @@ def render_graph_Reference():
     g.add_edge('GBufferRT.vbuffer', 'PathTracer.vbuffer')
     g.add_edge('GBufferRT.mvec', 'PathTracer.mvec')
     g.add_edge('GBufferRT.viewW', 'PathTracer.viewW')
-    g.add_edge('ColorReSTIR.color', 'AccumulatePass.input')
+    g.add_edge('ColorReSTIR.colorHit', 'AccumulatePass.input')
     g.add_edge('AccumulatePass0.output', 'ToneMapper.src')
     g.add_edge('PathTracer.color', 'AccumulatePass0.input')
     g.add_edge('AccumulatePass.output', 'ToneMapper0.src')

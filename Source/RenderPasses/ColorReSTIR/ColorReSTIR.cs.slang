@@ -58,8 +58,7 @@ enum class OutputMode : uint32_t
 {
     Default = 0u,
     Luminance = 1u,
-    ColorDistribution = 2u,
-    Combined = 3u,
+    Combined = 2u,
 }
 enum class TemporalColorEstimate : uint32_t
 {
@@ -75,6 +74,7 @@ cbuffer CB
 
     uint gIteration; // ReSTIR iteration
     OutputMode gOutputMode;
+    bool gDemodulateOutput;
     TemporalColorEstimate gTemporalColorEstimate;
     bool gNormalizeColorEstimate;
     bool gReuseDemodulated;
@@ -104,7 +104,7 @@ Texture2D<float4> gPrevPosW;
 Texture2D<float4> gViewW; // Optional (this must have a direction for all pixels if bound - GBufferRaster only does it for hits)
 
 // Outputs
-RWTexture2D<float4> gOutputColor;
+RWTexture2D<float4> gOutputColorHit;
 RWTexture2D<float4> gOutputDelta;
 RWTexture2D<float4> gOutputAlbedo;
 
@@ -306,6 +306,14 @@ ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const flo
     ShadingData sd = gScene.materials.prepareShadingData(v, materialID, -rayDir, lod);
 
     return sd;
+}
+
+float3 getAlbedo(BSDFProperties props)
+{
+    return max(
+        props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo + props.specularTransmissionAlbedo,
+        1e-3
+    );
 }
 
 /**
@@ -579,11 +587,13 @@ struct Phat
 {
     float3 full;
     float phat;
+    float distance;
 
     __init()
     {
         full = float3(0);
         phat = 0;
+        distance = 0;
     }
 }
 Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, inout ReSTIRSample X, bool checkVisibility)
@@ -591,7 +601,6 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
     Phat phat = Phat();
 
     float3 dir = float3(0);
-    float distance = 0;
     float3 Li;
     if (X.type == 1)
     {
@@ -601,7 +610,7 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
             return phat;
 
         dir = ls.dir;
-        distance = ls.distance;
+        phat.distance = ls.distance;
         Li = ls.Li;
 #else
         return phat;
@@ -611,7 +620,7 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
     {
 #if USE_ENV_LIGHT == 1
         dir = X.dir;
-        distance = kRayTMax;
+        phat.distance = kRayTMax;
         Li = gEnvMapSampler.eval(dir);
 #else
         return phat;
@@ -634,7 +643,7 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
         var safePos = computeRayOrigin(initialPos, triangle.normal);
         var origin = computeRayOrigin(sd.posW, dot(sd.faceN, safePos - sd.posW) >= 0.f ? sd.faceN : -sd.faceN);
         dir = normalizeSafe(safePos - origin);
-        distance = length(safePos - origin);
+        phat.distance = length(safePos - origin);
 #else
         return phat;
 #endif
@@ -658,7 +667,7 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
         const float3 origin = computeRayOrigin(sd.posW, dot(sd.faceN, dir) >= 0.f ? sd.faceN : -sd.faceN);
 
         // Test visibility by tracing a shadow ray.
-        const Ray ray = Ray(origin, dir, 0.f, distance);
+        const Ray ray = Ray(origin, dir, 0.f, phat.distance);
         if (!traceSceneVisibilityRay<1>(ray, RAY_FLAG_NONE, 0xff))
             return phat;
     }
@@ -668,10 +677,7 @@ Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerat
     phat.full = (any(isnan(bsdf)) ? 0 : bsdf) * Li;
     if (gReuseDemodulated)
     {
-        var props = mi.getProperties(sd);
-        var albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
-                     props.specularTransmissionAlbedo;
-        phat.full = phat.full / max(albedo, 1e-3);
+        phat.full = phat.full / getAlbedo(mi.getProperties(sd));
     }
     phat.phat = sumColor(phat.full);
     return phat;
@@ -731,10 +737,11 @@ struct Output
     float3 color;
     float3 delta;
     float3 albedo;
+    float distance;
 }
 Output restirDirect(const uint2 pixel)
 {
-    Output output = Output(float3(0.f), float3(0.f));
+    Output output = Output(float3(0.f), float3(0.f), 0.f);
 
     ReSTIRPoint point;
     if (point.initialize(pixel))
@@ -872,22 +879,19 @@ Output restirDirect(const uint2 pixel)
                 float3 delta = float3(0);
                 for (int i = 0; i < gDeltaSamples; ++i)
                 {
-                    delta += evalDelta(point.sd, point.mi, sg) / gDeltaSamples;
+                    delta += evalDelta(points[0].sd, points[0].mi, sg) / gDeltaSamples;
                 }
-                var props = point.mi.getProperties(point.sd);
-                output.color = props.emission;
+                var props = points[0].mi.getProperties(points[0].sd);
                 output.delta = delta;
-                output.albedo = props.diffuseReflectionAlbedo + props.diffuseTransmissionAlbedo + props.specularReflectionAlbedo +
-                                props.specularTransmissionAlbedo;
+                output.albedo = getAlbedo(props);
+                // TODO: cache this
+                output.distance = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, false).distance;
             }
-            float3 modulate = gReuseDemodulated ? max(output.albedo, 1e-3) : float3(1);
+            float3 modulate = gReuseDemodulated ? output.albedo : float3(1);
             switch (gOutputMode)
             {
             case OutputMode::Default:
-                output.color += evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).full * points[0].r.W * modulate;
-                break;
-            case OutputMode::ColorDistribution:
-                output.color = points[0].c.color;
+                output.color = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).full * points[0].r.W * modulate;
                 break;
             case OutputMode::Luminance:
                 output.color = evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W;
@@ -895,12 +899,12 @@ Output restirDirect(const uint2 pixel)
             case OutputMode::Combined:
                 if (gNormalizeColorEstimate)
                 {
-                    output.color +=
+                    output.color =
                         points[0].c.apply(evalF(points[0].sd, points[0].mi, sg, points[0].r.Y, true).phat * points[0].r.W) * modulate;
                 }
                 else
                 {
-                    output.color += points[0].c.color * modulate;
+                    output.color = points[0].c.color * modulate;
                 }
                 break;
             default:
@@ -928,7 +932,12 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     if (isInBounds(pixel))
     {
         Output output = restirDirect(pixel);
-        gOutputColor[pixel] = float4(output.color, 1.f);
+        if (gDemodulateOutput)
+        {
+            output.color /= output.albedo;
+            output.delta /= output.albedo;
+        }
+        gOutputColorHit[pixel] = float4(output.color, output.distance);
         gOutputDelta[pixel] = float4(output.delta, 1.f);
         gOutputAlbedo[pixel] = float4(output.albedo, 1.f);
     }

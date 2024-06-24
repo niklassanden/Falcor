@@ -64,15 +64,13 @@ public:
     {
         Default = 0u,
         Luminance = 1u,
-        ColorDistribution = 2u,
-        Combined = 3u,
+        Combined = 2u,
     };
     FALCOR_ENUM_INFO(
         OutputMode,
         {
             {OutputMode::Default, "Default"},
             {OutputMode::Luminance, "Luminance"},
-            {OutputMode::ColorDistribution, "ColorDistribution"},
             {OutputMode::Combined, "Combined"},
         }
     );
@@ -116,12 +114,13 @@ private:
     struct
     {
         OutputMode outputMode = OutputMode::Combined;
+        bool demodulateOutput = false;
         TemporalColorEstimate temporalColorEstimate = TemporalColorEstimate::Gradient;
         bool normalizeColorEstimate = false;
         bool reuseDemodulated = false;
-        uint analyticalSamples = 4;
-        uint environmentSamples = 4;
-        uint emissiveSamples = 4;
+        uint analyticalSamples = 1;
+        uint environmentSamples = 1;
+        uint emissiveSamples = 1;
         uint deltaSamples = 1;
         bool candidatesVisibility = false;
         uint maxConfidence = 20;

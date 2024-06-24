@@ -59,16 +59,16 @@ const char kPrevPosW[] = "prevPosW";
 const ChannelList kInternalChannels = {
     // clang-format off
     { kPrevNormals,     "gPrevNormals",     "Guide normals in world space from the last frame", false, ResourceFormat::RGBA32Float },
-    { kPrevLinearZ,     "gPrevLinearZ",     "LinearZ from the last frame", false, ResourceFormat::RG32Float },
-    { kPrevPosW,        "gPrevPosW",        "World position from the last frame", false, ResourceFormat::RGBA32Float },
+    { kPrevLinearZ,     "gPrevLinearZ",     "LinearZ from the last frame",                      false, ResourceFormat::RG32Float },
+    { kPrevPosW,        "gPrevPosW",        "World position from the last frame",               false, ResourceFormat::RGBA32Float },
     // clang-format on
 };
 
 const ChannelList kOutputChannels = {
     // clang-format off
-    { "color",          "gOutputColor",     "Output color (sum of direct and indirect)", false, ResourceFormat::RGBA32Float },
-    { "delta",          "gOutputDelta",     "Output color from delta distributions", false, ResourceFormat::RGBA32Float },
-    { "albedo",         "gOutputAlbedo",    "Sum of diffuse and specular reflectance", false, ResourceFormat::RGBA32Float },
+    { "colorHit",           "gOutputColorHit",  "Demodularized output color (sum of direct and indirect) and hit distance", false, ResourceFormat::RGBA32Float },
+    { "delta",              "gOutputDelta",     "Demodularized output color from delta distributions",                      false, ResourceFormat::RGBA32Float },
+    { "albedo",             "gOutputAlbedo",    "Sum of diffuse and specular reflectance",                                  false, ResourceFormat::RGBA32Float },
     // clang-format on
 };
 
@@ -76,6 +76,7 @@ const char kReSTIR[] = "gReSTIR";
 const char kPrevReSTIR[] = "gPrevReSTIR";
 
 const char kOutputMode[] = "gOutputMode";
+const char kDemodulateOutput[] = "gDemodulateOutput";
 const char kTemporalColorEstimate[] = "gTemporalColorEstimate";
 const char kNormalizeColorEstimate[] = "gNormalizeColorEstimate";
 const char kReuseDemodulated[] = "gReuseDemodulated";
@@ -135,6 +136,8 @@ void ColorReSTIR::parseProperties(const Properties& props)
     {
         if (key == kOutputMode)
             mConfig.outputMode = value;
+        else if (key == kDemodulateOutput)
+            mConfig.demodulateOutput = value;
         else if (key == kTemporalColorEstimate)
             mConfig.temporalColorEstimate = value;
         else if (key == kNormalizeColorEstimate)
@@ -171,6 +174,7 @@ Properties ColorReSTIR::getProperties() const
 {
     Properties props;
     props[kOutputMode] = mConfig.outputMode;
+    props[kDemodulateOutput] = mConfig.demodulateOutput;
     props[kTemporalColorEstimate] = mConfig.temporalColorEstimate;
     props[kNormalizeColorEstimate] = mConfig.normalizeColorEstimate;
     props[kReuseDemodulated] = mConfig.reuseDemodulated;
@@ -312,6 +316,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"]["gFrameCount"] = mFrameCount;
     var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
     var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
+    var["CB"][kDemodulateOutput] = mConfig.demodulateOutput;
     var["CB"][kTemporalColorEstimate] = static_cast<uint32_t>(mConfig.temporalColorEstimate);
     var["CB"][kNormalizeColorEstimate] = mConfig.normalizeColorEstimate;
     var["CB"][kReuseDemodulated] = mConfig.reuseDemodulated;
@@ -387,6 +392,9 @@ void ColorReSTIR::renderUI(Gui::Widgets& widget)
     }
 
     dirty |= widget.dropdown("Output mode", mConfig.outputMode);
+
+    dirty |= widget.checkbox("Demodulate output", mConfig.demodulateOutput);
+    widget.tooltip("Whether or not to demodulate the output color based on the albedo.", true);
 
     dirty |= widget.dropdown("Temporal gradient", mConfig.temporalColorEstimate);
 
