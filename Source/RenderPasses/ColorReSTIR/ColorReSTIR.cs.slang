@@ -66,28 +66,26 @@ enum class TemporalColorEstimate : uint32_t
     Full = 1u,
     Gradient = 2u,
 }
-cbuffer CB
-{
-    uint2 gFrameDim;
-    uint gFrameCount;    // Frame count since scene was loaded.
-    uint gPRNGDimension; // First available PRNG dimension.
+// Settings
+uniform uint2 gFrameDim;
+uniform uint gFrameCount;    // Frame count since scene was loaded.
+uniform uint gPRNGDimension; // First available PRNG dimension.
 
-    uint gIteration; // ReSTIR iteration
-    OutputMode gOutputMode;
-    bool gDemodulateOutput;
-    TemporalColorEstimate gTemporalColorEstimate;
-    bool gNormalizeColorEstimate;
-    bool gReuseDemodulated;
-    uint gAnalyticalSamples;
-    uint gEnvironmentSamples;
-    uint gEmissiveSamples;
-    uint gDeltaSamples;
-    bool gCandidatesVisibility;
-    uint gMaxConfidence;
-    bool gTemporalReuse;
-    uint gMaxSpatialSearch;
-    uint gSpatialRadius;
-}
+uniform uint gIteration; // ReSTIR iteration
+uniform OutputMode gOutputMode;
+uniform bool gDemodulateOutput;
+uniform TemporalColorEstimate gTemporalColorEstimate;
+uniform bool gNormalizeColorEstimate;
+uniform bool gReuseDemodulated;
+uniform uint gAnalyticalSamples;
+uniform uint gEnvironmentSamples;
+uniform uint gEmissiveSamples;
+uniform uint gDeltaSamples;
+uniform bool gCandidatesVisibility;
+uniform uint gMaxConfidence;
+uniform bool gTemporalReuse;
+uniform uint gMaxSpatialSearch;
+uniform uint gSpatialRadius;
 
 uniform EnvMapSampler gEnvMapSampler;
 uniform EmissiveLightSampler gEmissiveSampler;
@@ -111,10 +109,10 @@ RWTexture2D<float4> gOutputAlbedo;
 // Internals
 struct EmissiveSample
 {
-    float2 barycentric;
-    uint triangleIndex;
+    float2 barycentric = float2(0);
+    uint triangleIndex = 0;
 
-    __init(float2 barycentric_ = float2(0, 0), uint triangleIndex_ = 0, float distSqr_ = 0.f, float cosine_ = 0.f)
+    __init(float2 barycentric_, uint triangleIndex_ = 0)
     {
         barycentric = barycentric_;
         triangleIndex = triangleIndex_;
@@ -124,12 +122,12 @@ struct EmissiveSample
 }
 struct ReSTIRSample
 {
-    int type;                // 0 = null, 1 = light, 2 = dir, 3 = emissive
-    uint light;              // analytical
-    float3 dir;              // environment
-    EmissiveSample emissive; // emissive
+    int type = 0;                               // 0 = null, 1 = light, 2 = dir, 3 = emissive
+    uint light = 0;                             // analytical
+    float3 dir = float3(0);                     // environment
+    EmissiveSample emissive = EmissiveSample(); // emissive
 
-    __init(int type_ = 0, uint light_ = 0, float3 dir_ = float3(0, 0, 0), EmissiveSample emissive_ = EmissiveSample())
+    __init(int type_, uint light_ = 0, float3 dir_ = float3(0), EmissiveSample emissive_ = EmissiveSample())
     {
         type = type_;
         light = light_;
@@ -143,9 +141,9 @@ float sumColor(float3 color)
 }
 struct LightColor
 {
-    float3 color;
+    float3 color = float3(0);
 
-    __init(float3 color_ = float3(0.f)) { color = color_; }
+    __init(float3 color_) { color = color_; }
 
     float3 apply(float light) { return light * color; }
 
@@ -163,9 +161,9 @@ struct LightColor
 
     struct Builder
     {
-        float3 color;
+        float3 color = float3(0);
 
-        __init(float3 color_ = float3(0.f)) { color = color_; }
+        __init(float3 color_) { color = color_; }
 
         [mutating]
         void update(LightColor color_, float weight) { color += color_.apply(weight); }
@@ -175,25 +173,17 @@ struct LightColor
 }
 struct Reservoir
 {
-    ReSTIRSample Y;
-    float W;
-    int c;
-    float phat;
+    ReSTIRSample Y = ReSTIRSample();
+    float W = 0;
+    int c = 0;
+    float phat = 0;
 
     struct Builder
     {
-        ReSTIRSample Y;
-        float Wsum;
-        int c;
-        Phat phat;
-
-        __init()
-        {
-            Y = ReSTIRSample();
-            Wsum = 0.f;
-            c = 0;
-            phat = Phat();
-        }
+        ReSTIRSample Y = ReSTIRSample();
+        float Wsum = 0;
+        int c = 0;
+        Phat phat = Phat();
 
         /// Also returns the weight w_i
         [mutating]
@@ -213,7 +203,7 @@ struct Reservoir
         Reservoir build() { return Reservoir(Y, phat.phat == 0 ? 0 : Wsum / phat.phat, min(c, gMaxConfidence), phat.phat); }
     }
 
-    __init(ReSTIRSample Y_ = ReSTIRSample(), float W_ = 0.f, int c_ = 0, float phat_ = 0.f)
+    __init(ReSTIRSample Y_, float W_ = 0, int c_ = 0, float phat_ = 0)
     {
         Y = Y_;
         W = W_;
@@ -232,11 +222,11 @@ struct Reservoir
 }
 struct Temporal
 {
-    Reservoir r;
-    LightColor c;
-    LightColor old;
+    Reservoir r = Reservoir();
+    LightColor c = LightColor();
+    LightColor old = LightColor();
 
-    __init(Reservoir r_ = Reservoir(), LightColor c_ = LightColor(), LightColor old_ = LightColor())
+    __init(Reservoir r_, LightColor c_ = LightColor(), LightColor old_ = LightColor())
     {
         r = r_;
         c = c_;
@@ -262,10 +252,9 @@ static const float kRayTMax = FLT_MAX;
  * @param[in] hit Hit information.
  * @param[in] rayOrigin Ray origin.
  * @param[in] rayDir Normalized ray direction.
- * @param[in] lod Method for computing texture level-of-detail.
  * @return ShadingData struct.
  */
-ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const float3 rayDir, const ITextureSampler lod)
+ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const float3 rayDir)
 {
     VertexData v = {};
     uint materialID = {};
@@ -303,7 +292,7 @@ ShadingData loadShadingData(const HitInfo hit, const float3 rayOrigin, const flo
     }
 #endif
 
-    ShadingData sd = gScene.materials.prepareShadingData(v, materialID, -rayDir, lod);
+    ShadingData sd = gScene.materials.prepareShadingData(v, materialID, -rayDir);
 
     return sd;
 }
@@ -377,16 +366,16 @@ struct ReSTIRPoint
         if (!hit.isValid())
             return false;
 
-        let lod = ExplicitLodTextureSampler(0.f);
         const float3 primaryRayOrigin = gScene.camera.getPosition();
         const float3 primaryRayDir = getPrimaryRayDir(pixel, gScene.camera);
 
         // Load shading data.
-        sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir, lod);
+        sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir);
         // Handle delta distributions separately
         sd.mtl.setActiveLobes((uint)LobeType::NonDelta);
 
         // Create material instance at shading point.
+        let lod = ExplicitLodTextureSampler(0.f);
         mi = gScene.materials.getMaterialInstance(sd, lod, getMaterialInstanceHints(hit));
 
         return true;
@@ -553,9 +542,9 @@ float3 evalDelta(ShadingData sd, IMaterialInstance mi, inout SampleGenerator sg)
     if (mi.sample(sd, sg, bsdfSample, true))
     {
         const Ray ray = Ray(sd.computeRayOrigin(!bsdfSample.isLobe(LobeType::Transmission)), bsdfSample.wo, 0.f, kRayTMax);
-        HitInfo hit;
         float hitT;
-        if (traceSceneRay<1>(ray, hit, hitT, RAY_FLAG_NONE, 0xff) && hit.isValid())
+        let hit = traceSceneRay<1>(ray, hitT, RAY_FLAG_NONE, 0xff);
+        if (hit.isValid())
         {
 #if USE_EMISSIVE_LIGHTS == 1
             if (hit.getType() == HitType::Triangle)
@@ -585,16 +574,9 @@ float3 evalDelta(ShadingData sd, IMaterialInstance mi, inout SampleGenerator sg)
 
 struct Phat
 {
-    float3 full;
-    float phat;
-    float distance;
-
-    __init()
-    {
-        full = float3(0);
-        phat = 0;
-        distance = 0;
-    }
+    float3 full = float3(0);
+    float phat = 0;
+    float distance = 0;
 }
 Phat evalF(const ShadingData sd, const IMaterialInstance mi, inout SampleGenerator sg, inout ReSTIRSample X, bool checkVisibility)
 {

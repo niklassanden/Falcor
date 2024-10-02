@@ -249,12 +249,6 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
         FALCOR_THROW("This render pass does not support scene changes that require shader recompilation.");
     }
 
-    // Request the light collection if emissive lights are enabled.
-    if (mScene->getRenderSettings().useEmissiveLights)
-    {
-        mScene->getLightCollection(pRenderContext);
-    }
-
     // Configure depth-of-field.
     const bool useDOF = mScene->getCamera()->getApertureRadius() > 0.f;
     if (useDOF && renderData[kInputViewDir] == nullptr)
@@ -284,14 +278,19 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
             mEnvMapSampler = std::make_unique<EnvMapSampler>(mpDevice, mScene->getEnvMap());
         }
     }
-    if (mScene->useEmissiveLights())
+    // Request the light collection if emissive lights are enabled.
+    if (mScene->getRenderSettings().useEmissiveLights)
     {
-        if (!mEmissiveSampler)
+        auto lightCollection = mScene->getLightCollection(pRenderContext);
+        if (mScene->useEmissiveLights())
         {
-            mEmissiveSampler = std::make_unique<LightBVHSampler>(pRenderContext, mScene);
+            if (!mEmissiveSampler)
+            {
+                mEmissiveSampler = std::make_unique<LightBVHSampler>(pRenderContext, lightCollection);
+            }
+            mEmissiveSampler->update(pRenderContext, lightCollection);
+            defines.add(mEmissiveSampler->getDefines());
         }
-        mEmissiveSampler->update(pRenderContext);
-        defines.add(mEmissiveSampler->getDefines());
     }
 
     if (!mPass)
@@ -299,12 +298,12 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
         ProgramDesc desc;
         desc.addShaderModules(mScene->getShaderModules());
         desc.addShaderLibrary(kShaderFile).csEntry("main");
-        mPass = ComputePass::create(mpDevice, desc, defines);
+        mPass = ComputePass::create(mpDevice, desc, defines, false);
     }
 
     auto program = mPass->getProgram();
-    mPass->getProgram()->setTypeConformances(mScene->getTypeConformances());
-    mPass->getProgram()->addDefines(defines);
+    program->setTypeConformances(mScene->getTypeConformances());
+    program->addDefines(defines);
 
     // The program should have all necessary defines set at this point.
     mPass->setVars(nullptr);
@@ -312,23 +311,23 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     mSampleGenerator->bindShaderData(var);
     mScene->bindShaderData(var["gScene"]);
 
-    var["CB"]["gFrameDim"] = targetDim;
-    var["CB"]["gFrameCount"] = mFrameCount;
-    var["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
-    var["CB"][kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
-    var["CB"][kDemodulateOutput] = mConfig.demodulateOutput;
-    var["CB"][kTemporalColorEstimate] = static_cast<uint32_t>(mConfig.temporalColorEstimate);
-    var["CB"][kNormalizeColorEstimate] = mConfig.normalizeColorEstimate;
-    var["CB"][kReuseDemodulated] = mConfig.reuseDemodulated;
-    var["CB"][kAnalyticalSamples] = mConfig.analyticalSamples;
-    var["CB"][kEnvironmentSamples] = mConfig.environmentSamples;
-    var["CB"][kEmissiveSamples] = mConfig.emissiveSamples;
-    var["CB"][kDeltaSamples] = mConfig.deltaSamples;
-    var["CB"][kCandidatesVisibility] = mConfig.candidatesVisibility;
-    var["CB"][kMaxConfidence] = mConfig.maxConfidence;
-    var["CB"][kTemporalReuse] = mConfig.temporalReuse;
-    var["CB"][kMaxSpatialSearch] = mConfig.maxSpatialSearch;
-    var["CB"][kSpatialRadius] = mConfig.spatialRadius;
+    var["gFrameDim"] = targetDim;
+    var["gFrameCount"] = mFrameCount;
+    var["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
+    var[kOutputMode] = static_cast<uint32_t>(mConfig.outputMode);
+    var[kDemodulateOutput] = mConfig.demodulateOutput;
+    var[kTemporalColorEstimate] = static_cast<uint32_t>(mConfig.temporalColorEstimate);
+    var[kNormalizeColorEstimate] = mConfig.normalizeColorEstimate;
+    var[kReuseDemodulated] = mConfig.reuseDemodulated;
+    var[kAnalyticalSamples] = mConfig.analyticalSamples;
+    var[kEnvironmentSamples] = mConfig.environmentSamples;
+    var[kEmissiveSamples] = mConfig.emissiveSamples;
+    var[kDeltaSamples] = mConfig.deltaSamples;
+    var[kCandidatesVisibility] = mConfig.candidatesVisibility;
+    var[kMaxConfidence] = mConfig.maxConfidence;
+    var[kTemporalReuse] = mConfig.temporalReuse;
+    var[kMaxSpatialSearch] = mConfig.maxSpatialSearch;
+    var[kSpatialRadius] = mConfig.spatialRadius;
 
     if (mScene->useEnvLight() && mEnvMapSampler)
     {
@@ -357,7 +356,7 @@ void ColorReSTIR::execute(RenderContext* pRenderContext, const RenderData& rende
     // Dispatch
     for (int it = 0; it < 2; ++it)
     {
-        var["CB"]["gIteration"] = it;
+        var["gIteration"] = it;
         var[kReSTIR] = mReSTIRBuffers[0];
         var[kPrevReSTIR] = mReSTIRBuffers[1];
         std::swap(mReSTIRBuffers[0], mReSTIRBuffers[1]);
